@@ -294,6 +294,21 @@ def process_message(message):
     """Process an incoming message from the extension."""
     logger.info(f"Processing message: {message.get('action', 'unknown')}")
 
+    # Check if this is a response to a screenshot command - save it!
+    if message.get('success') and message.get('data') and 'requestId' in message:
+        # This looks like a screenshot response - save it
+        logger.info("Received screenshot data, saving...")
+        save_result = handle_local_command({
+            'action': 'saveScreenshot',
+            'data': message.get('data'),
+            'filename': f'screenshot_{int(time.time())}.png'
+        })
+        if save_result:
+            logger.info(f"Screenshot saved: {save_result.get('filepath')}")
+            # Also forward the response to the server
+            forward_response_to_server(message)
+            return save_result
+
     # Try to handle locally first
     local_result = handle_local_command(message)
     if local_result is not None:
@@ -308,6 +323,29 @@ def process_message(message):
             'error': 'MCP server is not available. Please start the server first.',
             'requestId': message.get('requestId')
         }
+
+
+def forward_response_to_server(response):
+    """Forward a response from the extension to the MCP server."""
+    import urllib.request
+    import urllib.error
+
+    try:
+        url = f'{MCP_SERVER_URL}/browser/response'
+        data = json.dumps(response).encode('utf-8')
+
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={'Content-Type': 'application/json'}
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+
+    except Exception as e:
+        logger.error(f"Failed to forward response to server: {e}")
+        return None
 
 
 def input_thread():
