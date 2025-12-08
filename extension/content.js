@@ -41,6 +41,18 @@
         return highlightElement(message);
       case "waitForElement":
         return waitForElement(message);
+      case "waitForChange":
+        return waitForChange(message);
+      case "waitForNetworkIdle":
+        return waitForNetworkIdle(message);
+      case "observeElement":
+        return observeElement(message);
+      case "stopObserving":
+        return stopObserving(message);
+      case "scrollAndCapture":
+        return scrollAndCapture(message);
+      case "clickAndWait":
+        return clickAndWait(message);
       case "captureFullPage":
         return captureFullPage(message);
       case "inspectElement":
@@ -513,6 +525,385 @@
     }
 
     throw new Error(`Element not found within ${timeout}ms`);
+  }
+
+  // Active mutation observers
+  const activeObservers = new Map();
+
+  // Wait for DOM changes (useful after clicking dynamic elements)
+  async function waitForChange(options) {
+    const timeout = options.timeout || 10000;
+    const targetSelector = options.selector || 'body';
+    const target = document.querySelector(targetSelector) || document.body;
+
+    return new Promise((resolve, reject) => {
+      let resolved = false;
+      const changes = [];
+
+      const observer = new MutationObserver((mutations) => {
+        if (resolved) return;
+
+        for (const mutation of mutations) {
+          const change = {
+            type: mutation.type,
+            target: mutation.target.tagName?.toLowerCase(),
+            addedNodes: mutation.addedNodes.length,
+            removedNodes: mutation.removedNodes.length
+          };
+
+          // Filter by change type if specified
+          if (options.changeType) {
+            if (options.changeType === 'childList' && mutation.type !== 'childList') continue;
+            if (options.changeType === 'attributes' && mutation.type !== 'attributes') continue;
+            if (options.changeType === 'text' && mutation.type !== 'characterData') continue;
+          }
+
+          changes.push(change);
+
+          // Check if we should resolve now
+          if (options.waitForAll !== true) {
+            resolved = true;
+            observer.disconnect();
+            resolve({
+              changed: true,
+              changes: changes,
+              waitedMs: Date.now() - startTime
+            });
+            return;
+          }
+        }
+      });
+
+      const startTime = Date.now();
+
+      observer.observe(target, {
+        childList: true,
+        subtree: options.subtree !== false,
+        attributes: options.attributes !== false,
+        characterData: options.characterData === true,
+        attributeOldValue: options.attributeOldValue === true
+      });
+
+      // Timeout
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          observer.disconnect();
+          if (changes.length > 0) {
+            resolve({ changed: true, changes, waitedMs: timeout });
+          } else {
+            resolve({ changed: false, changes: [], waitedMs: timeout, timedOut: true });
+          }
+        }
+      }, timeout);
+    });
+  }
+
+  // Wait for network requests to settle (useful after AJAX calls)
+  async function waitForNetworkIdle(options) {
+    const timeout = options.timeout || 10000;
+    const idleTime = options.idleTime || 500;
+    const startTime = Date.now();
+
+    let lastActivityTime = Date.now();
+    let pendingRequests = 0;
+
+    // Hook into fetch
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      pendingRequests++;
+      lastActivityTime = Date.now();
+      try {
+        const result = await originalFetch(...args);
+        return result;
+      } finally {
+        pendingRequests--;
+        lastActivityTime = Date.now();
+      }
+    };
+
+    // Hook into XMLHttpRequest
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function(...args) {
+      this._ccb_tracked = true;
+      return originalOpen.apply(this, args);
+    };
+
+    XMLHttpRequest.prototype.send = function(...args) {
+      if (this._ccb_tracked) {
+        pendingRequests++;
+        lastActivityTime = Date.now();
+        this.addEventListener('loadend', () => {
+          pendingRequests--;
+          lastActivityTime = Date.now();
+        });
+      }
+      return originalSend.apply(this, args);
+    };
+
+    try {
+      while (Date.now() - startTime < timeout) {
+        const idleDuration = Date.now() - lastActivityTime;
+        if (pendingRequests === 0 && idleDuration >= idleTime) {
+          return {
+            idle: true,
+            waitedMs: Date.now() - startTime,
+            pendingRequests: 0
+          };
+        }
+        await sleep(100);
+      }
+
+      return {
+        idle: false,
+        timedOut: true,
+        waitedMs: timeout,
+        pendingRequests
+      };
+    } finally {
+      // Restore original functions
+      window.fetch = originalFetch;
+      XMLHttpRequest.prototype.open = originalOpen;
+      XMLHttpRequest.prototype.send = originalSend;
+    }
+  }
+
+  // Set up continuous observation of an element for changes
+  function observeElement(options) {
+    const targetSelector = options.selector;
+    const target = document.querySelector(targetSelector);
+
+    if (!target) {
+      throw new Error(`Element not found: ${targetSelector}`);
+    }
+
+    const observerId = options.observerId || `obs_${Date.now()}`;
+
+    // Stop existing observer with same ID
+    if (activeObservers.has(observerId)) {
+      activeObservers.get(observerId).disconnect();
+    }
+
+    const changes = [];
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        changes.push({
+          type: mutation.type,
+          timestamp: Date.now(),
+          target: generateSelector(mutation.target),
+          addedNodes: Array.from(mutation.addedNodes).map(n => n.tagName?.toLowerCase() || 'text').filter(Boolean),
+          removedNodes: Array.from(mutation.removedNodes).map(n => n.tagName?.toLowerCase() || 'text').filter(Boolean),
+          attributeName: mutation.attributeName,
+          oldValue: mutation.oldValue
+        });
+
+        // Keep only last 100 changes
+        if (changes.length > 100) changes.shift();
+      }
+    });
+
+    observer.observe(target, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+      attributeOldValue: true
+    });
+
+    activeObservers.set(observerId, { observer, changes, target: targetSelector });
+
+    return {
+      observing: true,
+      observerId,
+      target: targetSelector
+    };
+  }
+
+  // Stop observing and get accumulated changes
+  function stopObserving(options) {
+    const observerId = options.observerId;
+
+    if (!activeObservers.has(observerId)) {
+      return { found: false, observerId };
+    }
+
+    const { observer, changes, target } = activeObservers.get(observerId);
+    observer.disconnect();
+    activeObservers.delete(observerId);
+
+    return {
+      stopped: true,
+      observerId,
+      target,
+      changes,
+      totalChanges: changes.length
+    };
+  }
+
+  // Scroll through page and collect viewport snapshots info
+  async function scrollAndCapture(options) {
+    const scrollStep = options.scrollStep || window.innerHeight * 0.8;
+    const delay = options.delay || 500;
+    const maxScrolls = options.maxScrolls || 20;
+
+    const snapshots = [];
+    const originalScroll = window.scrollY;
+    let scrollCount = 0;
+
+    // Start from top
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    await sleep(delay);
+
+    while (scrollCount < maxScrolls) {
+      const snapshot = {
+        scrollY: window.scrollY,
+        viewportHeight: window.innerHeight,
+        documentHeight: document.documentElement.scrollHeight,
+        visibleElements: getVisibleInteractiveElements(),
+        timestamp: Date.now()
+      };
+      snapshots.push(snapshot);
+
+      // Check if we've reached the bottom
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 10) {
+        break;
+      }
+
+      // Scroll down
+      window.scrollBy({ top: scrollStep, behavior: 'smooth' });
+      await sleep(delay);
+      scrollCount++;
+    }
+
+    // Restore original scroll position if requested
+    if (options.restore !== false) {
+      window.scrollTo({ top: originalScroll, behavior: 'instant' });
+    }
+
+    return {
+      completed: true,
+      snapshots,
+      totalScrolls: scrollCount,
+      documentHeight: document.documentElement.scrollHeight,
+      message: 'Use browser_screenshot after each scroll position for images'
+    };
+  }
+
+  // Get interactive elements currently visible in viewport
+  function getVisibleInteractiveElements() {
+    const elements = [];
+    const selectors = [
+      'a[href]', 'button', 'input', 'textarea', 'select',
+      '[onclick]', '[role="button"]', '[role="link"]',
+      '[tabindex]:not([tabindex="-1"])'
+    ];
+
+    document.querySelectorAll(selectors.join(', ')).forEach((el) => {
+      const rect = el.getBoundingClientRect();
+
+      // Check if element is in viewport
+      if (rect.top < window.innerHeight && rect.bottom > 0 &&
+          rect.left < window.innerWidth && rect.right > 0 &&
+          rect.width > 0 && rect.height > 0 && isVisible(el)) {
+
+        elements.push({
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim().substring(0, 50) || null,
+          selector: generateSelector(el),
+          position: {
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2)
+          }
+        });
+      }
+    });
+
+    return elements.slice(0, 50); // Limit to 50 elements
+  }
+
+  // Click an element and wait for dynamic changes
+  async function clickAndWait(options) {
+    const waitTimeout = options.waitTimeout || 5000;
+    const waitForSelector = options.waitForSelector;
+    const waitForChange = options.waitForChange !== false;
+
+    // Set up mutation observer before clicking
+    let changes = [];
+    let observer = null;
+
+    if (waitForChange) {
+      observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          changes.push({
+            type: mutation.type,
+            target: mutation.target.tagName?.toLowerCase(),
+            addedNodes: mutation.addedNodes.length,
+            removedNodes: mutation.removedNodes.length
+          });
+        }
+      });
+
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true
+      });
+    }
+
+    // Perform the click
+    const clickResult = await performClick(options);
+
+    // Wait for changes or specific element
+    const startTime = Date.now();
+
+    if (waitForSelector) {
+      // Wait for specific element to appear
+      while (Date.now() - startTime < waitTimeout) {
+        const el = document.querySelector(waitForSelector);
+        if (el && isVisible(el)) {
+          if (observer) observer.disconnect();
+          return {
+            ...clickResult,
+            waited: true,
+            waitedMs: Date.now() - startTime,
+            foundElement: getElementInfo(el),
+            changes: changes.slice(0, 20)
+          };
+        }
+        await sleep(100);
+      }
+    } else if (waitForChange) {
+      // Wait for any DOM changes to settle
+      let lastChangeCount = 0;
+      let stableTime = 0;
+
+      while (Date.now() - startTime < waitTimeout) {
+        if (changes.length > lastChangeCount) {
+          lastChangeCount = changes.length;
+          stableTime = 0;
+        } else {
+          stableTime += 100;
+          if (stableTime >= 500) {
+            // DOM has been stable for 500ms
+            break;
+          }
+        }
+        await sleep(100);
+      }
+    }
+
+    if (observer) observer.disconnect();
+
+    return {
+      ...clickResult,
+      waited: true,
+      waitedMs: Date.now() - startTime,
+      changes: changes.slice(0, 20),
+      totalChanges: changes.length
+    };
   }
 
   // Capture full page

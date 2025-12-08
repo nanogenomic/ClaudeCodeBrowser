@@ -365,6 +365,88 @@ MCP_TOOLS: List[MCPTool] = [
                 "bypass_cache": {"type": "boolean", "description": "Hard refresh matching tabs.", "default": True}
             }
         }
+    ),
+    # Dynamic content tools
+    MCPTool(
+        name="browser_wait_for_change",
+        description="Wait for DOM changes on the page. Useful after clicking elements that trigger dynamic updates, AJAX calls, or animations.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector of element to observe (default: body).", "default": "body"},
+                "timeout": {"type": "integer", "description": "Max time to wait in ms.", "default": 10000},
+                "change_type": {"type": "string", "enum": ["childList", "attributes", "text"], "description": "Type of change to wait for."},
+                "subtree": {"type": "boolean", "description": "Observe child elements too.", "default": True},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_wait_for_network_idle",
+        description="Wait for network requests (fetch/XHR) to settle. Perfect for waiting after actions that trigger API calls.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "timeout": {"type": "integer", "description": "Max time to wait in ms.", "default": 10000},
+                "idle_time": {"type": "integer", "description": "How long network must be idle (ms).", "default": 500},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_observe_element",
+        description="Start observing an element for changes. Call browser_stop_observing later to get accumulated changes.",
+        input_schema={
+            "type": "object",
+            "required": ["selector"],
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector of element to observe."},
+                "observer_id": {"type": "string", "description": "ID for this observer (to stop it later)."},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_stop_observing",
+        description="Stop observing an element and get all accumulated changes since observation started.",
+        input_schema={
+            "type": "object",
+            "required": ["observer_id"],
+            "properties": {
+                "observer_id": {"type": "string", "description": "ID of the observer to stop."},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_scroll_and_capture",
+        description="Scroll through the entire page collecting information about visible elements at each viewport position. Use with browser_screenshot for full-page visual capture.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scroll_step": {"type": "integer", "description": "Pixels to scroll each step (default: 80% of viewport)."},
+                "delay": {"type": "integer", "description": "Delay between scrolls in ms.", "default": 500},
+                "max_scrolls": {"type": "integer", "description": "Maximum number of scroll steps.", "default": 20},
+                "restore": {"type": "boolean", "description": "Restore original scroll position after.", "default": True},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_click_and_wait",
+        description="Click an element and wait for dynamic content to load. Combines click + wait for DOM changes. Perfect for buttons that open modals, load content, or trigger navigation.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector for the element to click."},
+                "xpath": {"type": "string", "description": "XPath expression to find the element."},
+                "text": {"type": "string", "description": "Text content to search for and click."},
+                "wait_timeout": {"type": "integer", "description": "Max time to wait for changes in ms.", "default": 5000},
+                "wait_for_selector": {"type": "string", "description": "Wait for specific element to appear after click."},
+                "wait_for_change": {"type": "boolean", "description": "Wait for any DOM change.", "default": True},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
     )
 ]
 
@@ -563,7 +645,14 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             'browser_refresh': 'refresh',
             'browser_hard_refresh': 'hardRefresh',
             'browser_reload_all': 'reloadAll',
-            'browser_reload_by_url': 'reloadByUrl'
+            'browser_reload_by_url': 'reloadByUrl',
+            # Dynamic content tools
+            'browser_wait_for_change': 'waitForChange',
+            'browser_wait_for_network_idle': 'waitForNetworkIdle',
+            'browser_observe_element': 'observeElement',
+            'browser_stop_observing': 'stopObserving',
+            'browser_scroll_and_capture': 'scrollAndCapture',
+            'browser_click_and_wait': 'clickAndWait'
         }
 
         if tool_name not in tool_action_map:
