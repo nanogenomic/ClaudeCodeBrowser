@@ -104,15 +104,73 @@ def forward_to_mcp_server(message):
 
 
 def check_mcp_server():
-    """Check if MCP server is running."""
+    """Check if MCP server is running and responding."""
+    import urllib.request
+    import urllib.error
+
     try:
+        # First check if port is open
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)
         result = sock.connect_ex((MCP_SERVER_HOST, MCP_SERVER_PORT))
         sock.close()
-        return result == 0
+
+        if result != 0:
+            return False
+
+        # Port is open, now verify server is actually responding
+        url = f'{MCP_SERVER_URL}/health'
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = response.read().decode('utf-8')
+            return 'ok' in data.lower()
+
     except Exception:
         return False
+
+
+def kill_existing_server():
+    """Kill any existing MCP server process on the port."""
+    import subprocess
+
+    try:
+        # Find process using the port
+        result = subprocess.run(
+            ['lsof', '-ti', f':{MCP_SERVER_PORT}'],
+            capture_output=True,
+            text=True
+        )
+
+        if result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    pid = int(pid.strip())
+                    logger.info(f"Killing existing process on port {MCP_SERVER_PORT}: PID {pid}")
+                    os.kill(pid, 9)  # SIGKILL
+                except (ValueError, ProcessLookupError):
+                    pass
+
+            # Wait briefly for port to be released
+            time.sleep(0.5)
+            return True
+
+    except FileNotFoundError:
+        # lsof not available, try fuser
+        try:
+            result = subprocess.run(
+                ['fuser', '-k', f'{MCP_SERVER_PORT}/tcp'],
+                capture_output=True
+            )
+            time.sleep(0.5)
+            return True
+        except FileNotFoundError:
+            logger.warning("Neither lsof nor fuser available to kill existing server")
+
+    except Exception as e:
+        logger.warning(f"Failed to kill existing server: {e}")
+
+    return False
 
 
 def start_mcp_server():
@@ -150,11 +208,29 @@ def start_mcp_server():
         return False
 
 
+def is_port_in_use():
+    """Check if the MCP server port is in use (regardless of whether it responds)."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex((MCP_SERVER_HOST, MCP_SERVER_PORT))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
 def ensure_mcp_server():
     """Ensure MCP server is running, start it if not."""
+    # Check if server is running and responding
     if check_mcp_server():
-        logger.info("MCP server already running")
+        logger.info("MCP server already running and responding")
         return True
+
+    # Check if port is in use but server not responding (stale process)
+    if is_port_in_use():
+        logger.warning("Port in use but server not responding - killing stale process")
+        kill_existing_server()
 
     logger.info("MCP server not running, attempting to start...")
     return start_mcp_server()
