@@ -32,23 +32,63 @@ ClaudeCodeBrowser consists of four main components:
 
 ## Architecture
 
+### Dual-Server Design
+
+ClaudeCodeBrowser uses a **dual-server architecture** for maximum reliability and flexibility:
+
+| Server | Port | Protocol | Purpose |
+|--------|------|----------|---------|
+| **HTTP Server** | 8765 | HTTP REST | MCP tool calls, health checks, command polling, screenshot retrieval |
+| **WebSocket Server** | 8766 | WebSocket | Real-time browser communication (reserved for future use) |
+
+**Why Two Servers?**
+- **HTTP (8765)**: Primary communication channel. Claude Code's MCP client sends tool requests here. The browser extension polls this server every 500ms for pending commands.
+- **WebSocket (8766)**: Reserved for real-time bidirectional communication when instant responses are needed.
+
+### Communication Flow
+
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Claude Code   │────▶│   MCP Server     │────▶│  Native Host    │
-│   (or Agent)    │     │   (HTTP/WS)      │     │   (stdio)       │
-└─────────────────┘     └──────────────────┘     └────────┬────────┘
-                                                          │
-                                                          ▼
-                                                 ┌─────────────────┐
-                                                 │ Firefox Extension│
-                                                 │ (Content Script) │
-                                                 └─────────────────┘
-                                                          │
-                                                          ▼
-                                                 ┌─────────────────┐
-                                                 │   Web Page      │
-                                                 └─────────────────┘
+┌─────────────────┐     ┌─────────────────────────────────┐
+│   Claude Code   │────▶│        MCP Server               │
+│   (MCP Client)  │     │  ┌─────────┐  ┌──────────────┐ │
+└─────────────────┘     │  │HTTP:8765│  │WebSocket:8766│ │
+                        │  └────┬────┘  └──────────────┘ │
+                        └───────┼────────────────────────┘
+                                │
+                                ▼
+                        ┌───────────────┐
+                        │ Command Queue │◀───────polling────┐
+                        │  (In-Memory)  │                   │
+                        └───────┬───────┘                   │
+                                │                           │
+                                ▼                           │
+                        ┌───────────────┐          ┌────────┴────────┐
+                        │ Native Host   │◀────────▶│Firefox Extension│
+                        │   (stdio)     │          │(Background + CS)│
+                        └───────────────┘          └────────┬────────┘
+                                                            │
+                                                            ▼
+                                                   ┌─────────────────┐
+                                                   │   Web Page      │
+                                                   └─────────────────┘
 ```
+
+### Request Flow (Step by Step)
+
+1. **Claude Code → MCP Server**: Tool call via HTTP POST to `localhost:8765/mcp/call`
+2. **MCP Server → Command Queue**: Command is queued with unique ID
+3. **Browser Extension → MCP Server**: Extension polls `localhost:8765/browser/poll` every 500ms
+4. **MCP Server → Extension**: Pending command returned to extension
+5. **Extension → Web Page**: Command executed (screenshot, click, type, etc.)
+6. **Extension → MCP Server**: Response posted to `localhost:8765/browser/response`
+7. **MCP Server → Claude Code**: Result returned to original MCP call
+
+### Native Host (Optional Path)
+
+The native messaging host (`claudecodebrowser_host.py`) provides an alternative communication path:
+- Used when the browser extension needs to communicate with the local file system
+- Handles screenshot saving directly to disk at `/tmp/claudecodebrowser/screenshots/`
+- Enables clipboard operations and file downloads
 
 ## Installation
 
@@ -162,30 +202,57 @@ agent.fill_form({
 
 ### Available MCP Tools
 
+#### Core Navigation & Screenshots
 | Tool | Description |
 |------|-------------|
-| `browser_screenshot` | Take a screenshot of the current page |
-| `browser_click` | Click on an element |
-| `browser_type` | Type text into an input |
-| `browser_scroll` | Scroll the page |
-| `browser_navigate` | Navigate to a URL |
-| `browser_get_page_info` | Get page information and interactive elements |
-| `browser_get_elements` | Find elements by selector |
-| `browser_wait_for_element` | Wait for an element to appear |
-| `browser_highlight` | Highlight an element on the page |
-| `browser_execute_script` | Execute JavaScript |
-| `browser_get_tabs` | List browser tabs |
-| `browser_create_tab` | Create a new tab |
-| `browser_close_tab` | Close a tab |
-| `browser_focus_tab` | Focus a tab |
-| `browser_get_value` | Get input value |
-| `browser_set_value` | Set input value |
-| `browser_select_option` | Select dropdown option |
-| `browser_hover` | Hover over element |
+| `browser_screenshot` | Take a screenshot (visible area or full page) |
+| `browser_navigate` | Navigate to a URL, optionally in new tab |
 | `browser_refresh` | Refresh current page |
 | `browser_hard_refresh` | Force refresh bypassing cache (Ctrl+Shift+R) |
 | `browser_reload_all` | Reload all browser tabs |
 | `browser_reload_by_url` | Reload tabs matching URL pattern |
+
+#### Element Interaction
+| Tool | Description |
+|------|-------------|
+| `browser_click` | Click element by selector, XPath, text, or coordinates |
+| `browser_type` | Type text into an input field |
+| `browser_scroll` | Scroll page or element (up/down/left/right/top/bottom) |
+| `browser_hover` | Hover over an element to trigger hover effects |
+| `browser_get_value` | Get the value of an input element |
+| `browser_set_value` | Set input value directly (no typing simulation) |
+| `browser_select_option` | Select an option in a dropdown |
+
+#### Page Inspection
+| Tool | Description |
+|------|-------------|
+| `browser_get_page_info` | Get URL, title, forms, headings, interactive elements |
+| `browser_get_elements` | Find elements matching a CSS selector |
+| `browser_highlight` | Highlight an element for visual debugging |
+| `browser_execute_script` | Execute JavaScript in browser context |
+
+#### Tab Management
+| Tool | Description |
+|------|-------------|
+| `browser_get_tabs` | List all open browser tabs |
+| `browser_create_tab` | Create a new tab |
+| `browser_close_tab` | Close a tab by ID |
+| `browser_focus_tab` | Focus/activate a tab by ID |
+
+#### Waiting & Synchronization
+| Tool | Description |
+|------|-------------|
+| `browser_wait_for_element` | Wait for element to appear on page |
+| `browser_wait_for_change` | Wait for DOM changes (useful after clicks) |
+| `browser_wait_for_network_idle` | Wait for fetch/XHR requests to settle |
+| `browser_click_and_wait` | Click element and wait for DOM changes |
+
+#### Advanced Observation
+| Tool | Description |
+|------|-------------|
+| `browser_observe_element` | Start observing element for changes |
+| `browser_stop_observing` | Stop observing and get accumulated changes |
+| `browser_scroll_and_capture` | Scroll through page capturing element info |
 
 ### Page Refresh Commands
 
