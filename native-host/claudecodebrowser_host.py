@@ -115,6 +115,51 @@ def check_mcp_server():
         return False
 
 
+def start_mcp_server():
+    """Start the MCP server if it's not running."""
+    import subprocess
+
+    mcp_server_path = Path(__file__).parent.parent / 'mcp-server' / 'server.py'
+
+    if not mcp_server_path.exists():
+        logger.error(f"MCP server script not found at {mcp_server_path}")
+        return False
+
+    try:
+        # Start server as a detached subprocess
+        process = subprocess.Popen(
+            [sys.executable, str(mcp_server_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True  # Detach from parent process
+        )
+        logger.info(f"Started MCP server (PID: {process.pid})")
+
+        # Wait briefly for server to start
+        for _ in range(10):  # Try for up to 2 seconds
+            time.sleep(0.2)
+            if check_mcp_server():
+                logger.info("MCP server is now available")
+                return True
+
+        logger.warning("MCP server started but not yet responding")
+        return True  # Server started, may just need more time
+
+    except Exception as e:
+        logger.error(f"Failed to start MCP server: {e}")
+        return False
+
+
+def ensure_mcp_server():
+    """Ensure MCP server is running, start it if not."""
+    if check_mcp_server():
+        logger.info("MCP server already running")
+        return True
+
+    logger.info("MCP server not running, attempting to start...")
+    return start_mcp_server()
+
+
 def handle_local_command(message):
     """Handle commands that don't need MCP server."""
     action = message.get('action')
@@ -212,6 +257,10 @@ def main():
     """Main entry point."""
     logger.info("ClaudeCodeBrowser Native Host starting...")
     logger.info(f"MCP Server URL: {MCP_SERVER_URL}")
+
+    # Auto-start MCP server if not running
+    ensure_mcp_server()
+
     logger.info(f"MCP Server available: {check_mcp_server()}")
 
     # Start output thread
