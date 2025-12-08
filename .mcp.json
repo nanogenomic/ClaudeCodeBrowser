@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "claudecodebrowser": {
+      "command": "python3",
+      "args": ["/home/dre/.claudecodebrowser/mcp-server/server.py"],
+      "env": {}
+    }
+  }
+}

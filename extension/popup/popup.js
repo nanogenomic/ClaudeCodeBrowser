@@ -69,18 +69,47 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Test connection button
   document.getElementById('btn-test-connection').addEventListener('click', async () => {
+    showToast('Checking MCP server...', 'info');
+
     try {
       const response = await fetch('http://localhost:8765/health');
       if (response.ok) {
+        const data = await response.json();
         updateStatus(true);
-        showToast('Connected to MCP server!', 'success');
+        showToast(`Connected! Server v${data.version}`, 'success');
       } else {
-        updateStatus(false);
-        showToast('Server not responding', 'error');
+        throw new Error('Server not responding');
       }
     } catch (error) {
-      updateStatus(false);
-      showToast('Cannot reach MCP server', 'error');
+      // Server not running - trigger native host to start it
+      showToast('Starting MCP server via native host...', 'info');
+      updateStatus(false, 'Starting...');
+
+      try {
+        // Send a message through background script to native host
+        // This will trigger the native host's ensure_mcp_server() function
+        const result = await browser.runtime.sendMessage({
+          target: 'background',
+          action: 'status'
+        });
+
+        // Wait a moment for server to start, then recheck
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const retryResponse = await fetch('http://localhost:8765/health');
+        if (retryResponse.ok) {
+          const data = await retryResponse.json();
+          updateStatus(true);
+          showToast(`Server started! v${data.version}`, 'success');
+        } else {
+          updateStatus(false);
+          showToast('Server started but not responding yet', 'warning');
+        }
+      } catch (nativeError) {
+        updateStatus(false);
+        showToast('Failed to start server. Check native host.', 'error');
+        console.error('Native host error:', nativeError);
+      }
     }
   });
 
@@ -94,22 +123,57 @@ async function checkConnection() {
       method: 'GET',
       mode: 'cors'
     });
-    updateStatus(response.ok);
+    if (response.ok) {
+      updateStatus(true);
+    } else {
+      throw new Error('Not OK');
+    }
   } catch (error) {
     updateStatus(false);
+    // Try to auto-start via native host on initial load
+    tryAutoStart();
   }
 }
 
-function updateStatus(connected) {
+async function tryAutoStart() {
+  try {
+    updateStatus(false, 'Starting...');
+
+    // Trigger native host which will auto-start server
+    await browser.runtime.sendMessage({
+      target: 'background',
+      action: 'status'
+    });
+
+    // Wait for server to start
+    await new Promise(resolve => setTimeout(resolve, 2500));
+
+    // Recheck
+    const response = await fetch('http://localhost:8765/health');
+    if (response.ok) {
+      updateStatus(true);
+    } else {
+      updateStatus(false);
+    }
+  } catch (error) {
+    updateStatus(false);
+    console.log('Auto-start failed:', error);
+  }
+}
+
+function updateStatus(connected, customText = null) {
   const statusEl = document.getElementById('status');
   const statusText = statusEl.querySelector('.status-text');
 
-  if (connected) {
-    statusEl.classList.remove('disconnected');
+  statusEl.classList.remove('connected', 'disconnected', 'starting');
+
+  if (customText) {
+    statusEl.classList.add('starting');
+    statusText.textContent = customText;
+  } else if (connected) {
     statusEl.classList.add('connected');
     statusText.textContent = 'Connected';
   } else {
-    statusEl.classList.remove('connected');
     statusEl.classList.add('disconnected');
     statusText.textContent = 'Disconnected';
   }

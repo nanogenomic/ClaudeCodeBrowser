@@ -65,6 +65,20 @@ header {
   color: #f38ba8;
 }
 
+.status.starting .status-dot {
+  background: #f9e2af;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.status.starting {
+  color: #f9e2af;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 section {
   margin-bottom: 16px;
 }
@@ -208,6 +222,16 @@ footer a:hover {
 
 .toast.error {
   background: #f38ba8;
+  color: #1e1e2e;
+}
+
+.toast.warning {
+  background: #f9e2af;
+  color: #1e1e2e;
+}
+
+.toast.info {
+  background: #89b4fa;
   color: #1e1e2e;
 }
 
