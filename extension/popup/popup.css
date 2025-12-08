@@ -1,0 +1,223 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: #1e1e2e;
+  color: #cdd6f4;
+}
+
+.popup-container {
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #313244;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo h1 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #cdd6f4;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: #313244;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f38ba8;
+}
+
+.status.connected .status-dot {
+  background: #a6e3a1;
+}
+
+.status.connected {
+  color: #a6e3a1;
+}
+
+.status.disconnected {
+  color: #f38ba8;
+}
+
+section {
+  margin-bottom: 16px;
+}
+
+h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #6c7086;
+  margin-bottom: 8px;
+}
+
+.quick-actions .action-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  background: #313244;
+  border: 1px solid #45475a;
+  border-radius: 8px;
+  color: #cdd6f4;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+  background: #45475a;
+  border-color: #7c3aed;
+}
+
+.action-btn:active {
+  transform: scale(0.95);
+}
+
+.action-btn svg {
+  stroke: #7c3aed;
+}
+
+.current-tab {
+  background: #313244;
+  padding: 12px;
+  border-radius: 8px;
+}
+
+#tab-info .tab-title {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-info .tab-url {
+  font-size: 11px;
+  color: #6c7086;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.connection-info {
+  background: #313244;
+  padding: 12px;
+  border-radius: 8px;
+}
+
+.server-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#server-url {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  color: #89b4fa;
+}
+
+.btn-small {
+  padding: 4px 12px;
+  background: #7c3aed;
+  border: none;
+  border-radius: 4px;
+  color: white;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-small:hover {
+  background: #9333ea;
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid #313244;
+  font-size: 10px;
+  color: #6c7086;
+}
+
+footer a {
+  color: #7c3aed;
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
+
+/* Toast notification */
+.toast {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  padding: 10px 16px;
+  background: #45475a;
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: center;
+  animation: toast-in 0.3s ease;
+}
+
+.toast.success {
+  background: #a6e3a1;
+  color: #1e1e2e;
+}
+
+.toast.error {
+  background: #f38ba8;
+  color: #1e1e2e;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

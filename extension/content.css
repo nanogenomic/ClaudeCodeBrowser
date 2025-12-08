@@ -1,0 +1,75 @@
+/* ClaudeCodeBrowser - Content Script Styles */
+
+.claude-highlight-overlay {
+  animation: claude-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes claude-pulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(124, 58, 237, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(124, 58, 237, 0.8);
+  }
+}
+
+.claude-inspector-mode * {
+  cursor: crosshair !important;
+}
+
+.claude-inspector-mode *:hover {
+  outline: 2px dashed #7c3aed !important;
+  outline-offset: 2px;
+}
+
+.claude-element-tooltip {
+  position: fixed;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  z-index: 999999;
+  max-width: 400px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border: 1px solid #45475a;
+}
+
+.claude-element-tooltip code {
+  background: #313244;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #f5c2e7;
+}
+
+.claude-typing-cursor {
+  animation: claude-blink 1s step-end infinite;
+}
+
+@keyframes claude-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.claude-click-indicator {
+  position: fixed;
+  width: 30px;
+  height: 30px;
+  border: 3px solid #7c3aed;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 999999;
+  animation: claude-click-ripple 0.5s ease-out forwards;
+}
+
+@keyframes claude-click-ripple {
+  0% {
+    transform: scale(0.5);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}

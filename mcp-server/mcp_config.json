@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "claudecodebrowser": {
+      "command": "python3",
+      "args": ["/home/dre/.claudecodebrowser/mcp-server/server.py"],
+      "env": {
+        "CLAUDE_BROWSER_HOST": "127.0.0.1",
+        "CLAUDE_BROWSER_HTTP_PORT": "8765",
+        "CLAUDE_BROWSER_WS_PORT": "8766"
+      }
+    }
+  }
+}
