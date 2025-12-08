@@ -263,7 +263,10 @@ def handle_local_command(message):
             data = message.get('data', '')
             filename = message.get('filename', f'screenshot_{int(time.time())}.png')
 
-            screenshots_dir = Path.home() / '.claudecodebrowser' / 'screenshots'
+            # Use configurable screenshots directory (default: /tmp/claudecodebrowser/screenshots)
+            # This ensures screenshots are accessible from any mount point (e.g., /mnt/backup/)
+            default_dir = Path('/tmp/claudecodebrowser/screenshots')
+            screenshots_dir = Path(os.environ.get('CLAUDE_BROWSER_SCREENSHOTS_DIR', str(default_dir)))
             screenshots_dir.mkdir(parents=True, exist_ok=True)
 
             filepath = screenshots_dir / filename

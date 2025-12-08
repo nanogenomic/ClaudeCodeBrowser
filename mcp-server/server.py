@@ -65,8 +65,11 @@ HOST = os.environ.get('CLAUDE_BROWSER_HOST', '127.0.0.1')
 HTTP_PORT = int(os.environ.get('CLAUDE_BROWSER_HTTP_PORT', '8765'))
 WS_PORT = int(os.environ.get('CLAUDE_BROWSER_WS_PORT', '8766'))
 
-# Screenshots directory
-SCREENSHOTS_DIR = Path.home() / '.claudecodebrowser' / 'screenshots'
+# Screenshots directory - configurable via environment variable
+# Default to /tmp/claudecodebrowser/screenshots (accessible from any mount point)
+# Can be overridden by setting CLAUDE_BROWSER_SCREENSHOTS_DIR
+DEFAULT_SCREENSHOTS_DIR = Path('/tmp/claudecodebrowser/screenshots')
+SCREENSHOTS_DIR = Path(os.environ.get('CLAUDE_BROWSER_SCREENSHOTS_DIR', str(DEFAULT_SCREENSHOTS_DIR)))
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -619,7 +622,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.send_json_response({'error': 'Not found'}, 404)
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute an MCP tool."""
+        """Execute an MCP tool by sending command to browser via native host."""
         logger.info(f"Executing tool: {tool_name} with args: {arguments}")
 
         # Map tool names to actions
@@ -661,19 +664,109 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         action = tool_action_map[tool_name]
         tab_id = arguments.pop('tab_id', None)
 
-        command = BrowserCommand(
-            action=action,
-            tab_id=tab_id,
-            data=arguments
-        )
+        # Check if we have a browser connection via WebSocket
+        browser = connection_manager.get_active_browser()
 
-        # For now, return a placeholder response
-        # In production, this would actually send to the browser
+        if browser:
+            # Use async WebSocket communication
+            command = BrowserCommand(
+                action=action,
+                tab_id=tab_id,
+                data=arguments
+            )
+
+            # Run async command in event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in a sync context, need to handle differently
+                    future = asyncio.run_coroutine_threadsafe(
+                        connection_manager.send_command(command),
+                        loop
+                    )
+                    result = future.result(timeout=30)
+                else:
+                    result = loop.run_until_complete(connection_manager.send_command(command))
+
+                # Handle screenshot saving
+                if action == 'screenshot' and result.get('success') and result.get('data'):
+                    return self._save_screenshot(result, arguments)
+
+                return result
+            except Exception as e:
+                logger.error(f"WebSocket command failed: {e}")
+                # Fall through to HTTP method
+
+        # No WebSocket connection - try HTTP polling with native host
+        # The extension polls /browser/poll and we store commands there
+        command_data = {
+            'action': action,
+            'tabId': tab_id,
+            'data': arguments,
+            'requestId': str(time.time())
+        }
+
+        # Store command for extension to poll
+        self.server._pending_commands = getattr(self.server, '_pending_commands', [])
+        self.server._pending_commands.append(command_data)
+
+        # For screenshot specifically, we can return info about where to save
+        if action == 'screenshot':
+            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            filepath = SCREENSHOTS_DIR / filename
+            return {
+                'success': True,
+                'message': 'Screenshot command queued',
+                'save_path': str(filepath),
+                'screenshots_dir': str(SCREENSHOTS_DIR),
+                'action': action,
+                'note': 'Screenshot will be saved when browser extension responds'
+            }
+
         return {
             'success': True,
-            'message': f'Tool {tool_name} executed',
-            'command': asdict(command)
+            'message': f'Command {action} queued for browser',
+            'action': action
         }
+
+    def _save_screenshot(self, result: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Save screenshot data to file."""
+        try:
+            data = result.get('data', '')
+            save_to_file = arguments.get('save_to_file', True)
+            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+
+            if not save_to_file:
+                return result
+
+            # Handle base64 data URL
+            if data.startswith('data:image'):
+                header, encoded = data.split(',', 1)
+                image_data = base64.b64decode(encoded)
+            else:
+                image_data = base64.b64decode(data)
+
+            filepath = SCREENSHOTS_DIR / filename
+            with open(filepath, 'wb') as f:
+                f.write(image_data)
+
+            logger.info(f"Screenshot saved to: {filepath}")
+
+            return {
+                'success': True,
+                'filepath': str(filepath),
+                'filename': filename,
+                'size': len(image_data),
+                'tab': result.get('tab', {}),
+                'message': f'Screenshot saved to {filepath}'
+            }
+        except Exception as e:
+            logger.error(f"Failed to save screenshot: {e}")
+            return {
+                'success': False,
+                'error': f'Failed to save screenshot: {str(e)}',
+                'original_result': result
+            }
 
 
 def run_http_server():
