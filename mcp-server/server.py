@@ -575,6 +575,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 })
             self.send_json_response({'screenshots': sorted(screenshots, key=lambda x: x['created'], reverse=True)})
 
+        elif parsed.path == '/browser/poll':
+            # Extension/native host polls for pending commands
+            pending = getattr(self.server, '_pending_commands', [])
+            if pending:
+                # Return and clear the first pending command
+                command = pending.pop(0)
+                self.send_json_response({'command': command, 'has_more': len(pending) > 0})
+            else:
+                self.send_json_response({'command': None, 'has_more': False})
+
         else:
             self.send_json_response({'error': 'Not found'}, 404)
 

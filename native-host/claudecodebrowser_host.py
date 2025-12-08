@@ -332,6 +332,34 @@ def output_thread():
             continue
 
 
+def poll_for_commands():
+    """Poll MCP server for pending commands and forward to extension."""
+    import urllib.request
+    import urllib.error
+
+    while True:
+        try:
+            url = f'{MCP_SERVER_URL}/browser/poll'
+            req = urllib.request.Request(url)
+
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+
+                if data.get('command'):
+                    command = data['command']
+                    logger.info(f"Got command from server: {command.get('action')}")
+                    # Forward command to extension
+                    send_message(command)
+
+        except urllib.error.URLError:
+            # Server not available, wait and retry
+            pass
+        except Exception as e:
+            logger.debug(f"Poll error: {e}")
+
+        time.sleep(0.5)  # Poll every 500ms
+
+
 def main():
     """Main entry point."""
     logger.info("ClaudeCodeBrowser Native Host starting...")
@@ -345,6 +373,10 @@ def main():
     # Start output thread
     output_handler = threading.Thread(target=output_thread, daemon=True)
     output_handler.start()
+
+    # Start polling thread for commands from MCP server
+    poll_handler = threading.Thread(target=poll_for_commands, daemon=True)
+    poll_handler.start()
 
     # Process messages in main thread
     while True:
