@@ -5,6 +5,12 @@ ClaudeCodeBrowser Native Messaging Host
 This script acts as a bridge between the Firefox extension and the MCP server.
 It receives messages from the extension via native messaging and forwards them
 to the MCP server via HTTP or WebSocket.
+
+Features:
+- Auto-starts MCP server if not running
+- Monitors server health and restarts on failure
+- Self-healing with exponential backoff
+- No external process managers required
 """
 
 import sys
@@ -16,12 +22,22 @@ import logging
 import os
 import socket
 import time
+import signal
+import subprocess
 from pathlib import Path
+from datetime import datetime
 
 # Configure logging
 LOG_DIR = Path.home() / '.claudecodebrowser' / 'logs'
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / 'native_host.log'
+
+# Rotate log if too large (>5MB)
+if LOG_FILE.exists() and LOG_FILE.stat().st_size > 5 * 1024 * 1024:
+    backup = LOG_FILE.with_suffix('.log.old')
+    if backup.exists():
+        backup.unlink()
+    LOG_FILE.rename(backup)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -38,9 +54,21 @@ MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', 'localhost')
 MCP_SERVER_PORT = int(os.environ.get('CLAUDE_MCP_PORT', '8765'))
 MCP_SERVER_URL = f'http://{MCP_SERVER_HOST}:{MCP_SERVER_PORT}'
 
+# Health monitoring settings
+HEALTH_CHECK_INTERVAL = 10  # seconds
+MAX_RESTART_ATTEMPTS = 10
+BACKOFF_BASE = 2  # seconds, exponential backoff
+
 # Message queues for async communication
 incoming_queue = queue.Queue()
 outgoing_queue = queue.Queue()
+
+# Server process tracking
+server_process = None
+server_pid_file = LOG_DIR.parent / 'mcp_server.pid'
+restart_attempts = 0
+last_restart_time = 0
+health_monitor_running = True
 
 
 def read_message():
@@ -175,29 +203,69 @@ def kill_existing_server():
 
 def start_mcp_server():
     """Start the MCP server if it's not running."""
-    import subprocess
+    global server_process, restart_attempts, last_restart_time
 
-    mcp_server_path = Path(__file__).parent.parent / 'mcp-server' / 'server.py'
+    # Check backoff
+    now = time.time()
+    if restart_attempts > 0:
+        backoff_time = min(BACKOFF_BASE ** restart_attempts, 60)  # Cap at 60 seconds
+        time_since_last = now - last_restart_time
+        if time_since_last < backoff_time:
+            logger.debug(f"Backoff: waiting {backoff_time - time_since_last:.1f}s before restart")
+            return False
 
-    if not mcp_server_path.exists():
-        logger.error(f"MCP server script not found at {mcp_server_path}")
+    # Reset attempts after 5 minutes of stability
+    if restart_attempts > 0 and now - last_restart_time > 300:
+        logger.info("Resetting restart counter after stability period")
+        restart_attempts = 0
+
+    if restart_attempts >= MAX_RESTART_ATTEMPTS:
+        logger.error(f"Max restart attempts ({MAX_RESTART_ATTEMPTS}) reached. Manual intervention required.")
+        return False
+
+    # Find server script - check multiple locations
+    possible_paths = [
+        Path(__file__).parent.parent / 'mcp-server' / 'server.py',
+        Path.home() / '.claudecodebrowser' / 'mcp-server' / 'server.py',
+    ]
+
+    mcp_server_path = None
+    for path in possible_paths:
+        if path.exists():
+            mcp_server_path = path
+            break
+
+    if not mcp_server_path:
+        logger.error(f"MCP server script not found in any location")
         return False
 
     try:
         # Start server as a detached subprocess
-        process = subprocess.Popen(
+        server_process = subprocess.Popen(
             [sys.executable, str(mcp_server_path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True  # Detach from parent process
         )
-        logger.info(f"Started MCP server (PID: {process.pid})")
+
+        restart_attempts += 1
+        last_restart_time = time.time()
+
+        logger.info(f"Started MCP server (PID: {server_process.pid}, attempt #{restart_attempts})")
+
+        # Save PID for tracking
+        try:
+            with open(server_pid_file, 'w') as f:
+                f.write(str(server_process.pid))
+        except Exception:
+            pass
 
         # Wait briefly for server to start
-        for _ in range(10):  # Try for up to 2 seconds
+        for _ in range(15):  # Try for up to 3 seconds
             time.sleep(0.2)
             if check_mcp_server():
                 logger.info("MCP server is now available")
+                restart_attempts = 0  # Reset on successful start
                 return True
 
         logger.warning("MCP server started but not yet responding")
@@ -375,13 +443,16 @@ def poll_for_commands():
     import urllib.request
     import urllib.error
 
-    while True:
+    consecutive_failures = 0
+
+    while health_monitor_running:
         try:
             url = f'{MCP_SERVER_URL}/browser/poll'
             req = urllib.request.Request(url)
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
+                consecutive_failures = 0  # Reset on success
 
                 if data.get('command'):
                     command = data['command']
@@ -390,18 +461,88 @@ def poll_for_commands():
                     send_message(command)
 
         except urllib.error.URLError:
-            # Server not available, wait and retry
-            pass
+            consecutive_failures += 1
+            # Server not available - health monitor will handle restart
+            if consecutive_failures == 3:
+                logger.warning("Poll: MCP server not responding (health monitor will handle)")
         except Exception as e:
             logger.debug(f"Poll error: {e}")
 
         time.sleep(0.5)  # Poll every 500ms
 
 
+def health_monitor_thread():
+    """Background thread that monitors MCP server health and restarts if needed."""
+    global health_monitor_running, restart_attempts
+
+    logger.info("Health monitor started")
+    consecutive_failures = 0
+    last_healthy = time.time()
+
+    while health_monitor_running:
+        try:
+            time.sleep(HEALTH_CHECK_INTERVAL)
+
+            if not health_monitor_running:
+                break
+
+            # Check server health
+            if check_mcp_server():
+                if consecutive_failures > 0:
+                    logger.info(f"MCP server recovered after {consecutive_failures} failures")
+                consecutive_failures = 0
+                last_healthy = time.time()
+                restart_attempts = 0  # Reset on confirmed health
+            else:
+                consecutive_failures += 1
+                logger.warning(f"Health check failed ({consecutive_failures} consecutive)")
+
+                # Attempt restart after 2 consecutive failures
+                if consecutive_failures >= 2:
+                    logger.info("Attempting to restart MCP server...")
+
+                    # Kill stale process if port is in use
+                    if is_port_in_use():
+                        logger.info("Killing stale process on port")
+                        kill_existing_server()
+                        time.sleep(0.5)
+
+                    if start_mcp_server():
+                        logger.info("MCP server restart initiated")
+                        consecutive_failures = 0
+                    else:
+                        logger.error("Failed to restart MCP server")
+
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+
+    logger.info("Health monitor stopped")
+
+
+def shutdown():
+    """Clean shutdown of all threads."""
+    global health_monitor_running
+    logger.info("Shutting down...")
+    health_monitor_running = False
+
+
 def main():
     """Main entry point."""
+    global health_monitor_running
+
+    logger.info("=" * 60)
     logger.info("ClaudeCodeBrowser Native Host starting...")
     logger.info(f"MCP Server URL: {MCP_SERVER_URL}")
+    logger.info(f"Health check interval: {HEALTH_CHECK_INTERVAL}s")
+    logger.info("=" * 60)
+
+    # Setup signal handlers for clean shutdown
+    def signal_handler(signum, frame):
+        shutdown()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
     # Auto-start MCP server if not running
     ensure_mcp_server()
@@ -409,15 +550,20 @@ def main():
     logger.info(f"MCP Server available: {check_mcp_server()}")
 
     # Start output thread
-    output_handler = threading.Thread(target=output_thread, daemon=True)
+    output_handler = threading.Thread(target=output_thread, daemon=True, name="output")
     output_handler.start()
 
     # Start polling thread for commands from MCP server
-    poll_handler = threading.Thread(target=poll_for_commands, daemon=True)
+    poll_handler = threading.Thread(target=poll_for_commands, daemon=True, name="poll")
     poll_handler.start()
 
+    # Start health monitor thread - this is the key for auto-restart!
+    health_handler = threading.Thread(target=health_monitor_thread, daemon=True, name="health")
+    health_handler.start()
+    logger.info("Health monitor thread started - will auto-restart server on crashes")
+
     # Process messages in main thread
-    while True:
+    while health_monitor_running:
         message = read_message()
         if message is None:
             logger.info("Input stream closed, exiting")
@@ -434,12 +580,16 @@ def main():
 
         send_message(response)
 
+    shutdown()
+
 
 if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
         logger.info("Interrupted, exiting")
+        shutdown()
     except Exception as e:
         logger.exception(f"Fatal error: {e}")
+        shutdown()
         sys.exit(1)

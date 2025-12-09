@@ -233,10 +233,46 @@ MCP_TOOLS: List[MCPTool] = [
     ),
     MCPTool(
         name="browser_get_tabs",
-        description="Get list of all open browser tabs.",
+        description="Get list of all open browser tabs with detailed state info including URL, title, active status, loading state, window info, and whether playing audio.",
         input_schema={
             "type": "object",
             "properties": {}
+        }
+    ),
+    MCPTool(
+        name="browser_get_tab_info",
+        description="Get detailed information about a specific tab including page info from content script.",
+        input_schema={
+            "type": "object",
+            "required": ["tab_id"],
+            "properties": {
+                "tab_id": {"type": "integer", "description": "ID of the tab to get info for."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_find_tabs",
+        description="Find tabs by URL pattern, title, or other criteria.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL prefix to match."},
+                "url_pattern": {"type": "string", "description": "Regex pattern to match URLs."},
+                "title": {"type": "string", "description": "Text to search for in tab titles (case-insensitive)."},
+                "active": {"type": "boolean", "description": "Filter by active state."},
+                "audible": {"type": "boolean", "description": "Filter by playing audio."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_screenshot_all_tabs",
+        description="Take screenshots of all open tabs (or filtered by URL pattern). Cycles through tabs and restores original focus.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url_pattern": {"type": "string", "description": "Regex pattern to filter which tabs to screenshot."},
+                "include_data": {"type": "boolean", "description": "Include base64 image data in response (large).", "default": False}
+            }
         }
     ),
     MCPTool(
@@ -648,6 +684,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             'browser_highlight': 'highlight',
             'browser_execute_script': 'executeScript',
             'browser_get_tabs': 'getTabs',
+            'browser_get_tab_info': 'getTabInfo',
+            'browser_find_tabs': 'findTabs',
+            'browser_screenshot_all_tabs': 'screenshotAllTabs',
             'browser_create_tab': 'createTab',
             'browser_close_tab': 'closeTab',
             'browser_focus_tab': 'focusTab',

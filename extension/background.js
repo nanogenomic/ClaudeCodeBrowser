@@ -13,11 +13,33 @@ let isConnected = false;
 let pendingRequests = new Map();
 let requestCounter = 0;
 
+// Reconnection settings
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 20;
+const INITIAL_RECONNECT_DELAY = 1000;  // 1 second
+const MAX_RECONNECT_DELAY = 30000;     // 30 seconds
+
+// Calculate exponential backoff delay
+function getReconnectDelay() {
+  const delay = Math.min(
+    INITIAL_RECONNECT_DELAY * Math.pow(1.5, reconnectAttempts),
+    MAX_RECONNECT_DELAY
+  );
+  return delay;
+}
+
 // Connect to native messaging host
 function connectNativeHost() {
+  if (isConnected && nativePort) {
+    console.log("[ClaudeCodeBrowser] Already connected");
+    return;
+  }
+
   try {
+    console.log(`[ClaudeCodeBrowser] Connecting to native host (attempt ${reconnectAttempts + 1})...`);
     nativePort = browser.runtime.connectNative(NATIVE_HOST_NAME);
     isConnected = true;
+    reconnectAttempts = 0;  // Reset on successful connection
     console.log("[ClaudeCodeBrowser] Connected to native host");
 
     nativePort.onMessage.addListener(handleNativeMessage);
@@ -25,7 +47,26 @@ function connectNativeHost() {
   } catch (error) {
     console.error("[ClaudeCodeBrowser] Failed to connect to native host:", error);
     isConnected = false;
+    nativePort = null;
+    scheduleReconnect();
   }
+}
+
+function scheduleReconnect() {
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    console.error(`[ClaudeCodeBrowser] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
+    // Reset after a long delay to try again eventually
+    setTimeout(() => {
+      reconnectAttempts = 0;
+      connectNativeHost();
+    }, 60000);  // Try again after 1 minute
+    return;
+  }
+
+  const delay = getReconnectDelay();
+  reconnectAttempts++;
+  console.log(`[ClaudeCodeBrowser] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+  setTimeout(connectNativeHost, delay);
 }
 
 function handleDisconnect(port) {
@@ -36,14 +77,14 @@ function handleDisconnect(port) {
   isConnected = false;
   nativePort = null;
 
-  // Reject all pending requests
+  // Reject all pending requests with a descriptive error
   for (const [id, { reject }] of pendingRequests) {
-    reject(new Error("Native host disconnected"));
+    reject(new Error("Native host disconnected - reconnecting..."));
   }
   pendingRequests.clear();
 
-  // Try to reconnect after delay
-  setTimeout(connectNativeHost, 5000);
+  // Schedule reconnection with exponential backoff
+  scheduleReconnect();
 }
 
 function handleNativeMessage(message) {
@@ -64,29 +105,76 @@ function handleNativeMessage(message) {
   }
 }
 
-function sendToNativeHost(message) {
+function sendToNativeHost(message, retryCount = 0) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1000;
+
   return new Promise((resolve, reject) => {
+    // Try to connect if not connected
     if (!isConnected || !nativePort) {
       connectNativeHost();
-      if (!isConnected) {
-        reject(new Error("Not connected to native host"));
-        return;
-      }
+
+      // Wait a bit for connection to establish
+      setTimeout(() => {
+        if (!isConnected || !nativePort) {
+          if (retryCount < MAX_RETRIES) {
+            console.log(`[ClaudeCodeBrowser] Not connected, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
+            setTimeout(() => {
+              sendToNativeHost(message, retryCount + 1)
+                .then(resolve)
+                .catch(reject);
+            }, RETRY_DELAY);
+          } else {
+            reject(new Error("Not connected to native host after retries"));
+          }
+          return;
+        }
+
+        // Now connected, send the message
+        doSend();
+      }, 500);
+      return;
     }
 
-    const requestId = ++requestCounter;
-    message.requestId = requestId;
-    pendingRequests.set(requestId, { resolve, reject });
+    doSend();
 
-    // Timeout after 30 seconds
-    setTimeout(() => {
-      if (pendingRequests.has(requestId)) {
+    function doSend() {
+      const requestId = ++requestCounter;
+      message.requestId = requestId;
+      pendingRequests.set(requestId, { resolve, reject });
+
+      // Timeout after 30 seconds
+      const timeoutId = setTimeout(() => {
+        if (pendingRequests.has(requestId)) {
+          pendingRequests.delete(requestId);
+          reject(new Error("Request timeout"));
+        }
+      }, 30000);
+
+      // Store timeout for potential cleanup
+      pendingRequests.get(requestId).timeoutId = timeoutId;
+
+      try {
+        nativePort.postMessage(message);
+      } catch (error) {
         pendingRequests.delete(requestId);
-        reject(new Error("Request timeout"));
-      }
-    }, 30000);
+        clearTimeout(timeoutId);
 
-    nativePort.postMessage(message);
+        // Connection might have died, try to reconnect and retry
+        if (retryCount < MAX_RETRIES) {
+          console.log(`[ClaudeCodeBrowser] Send failed, reconnecting and retrying...`);
+          isConnected = false;
+          nativePort = null;
+          setTimeout(() => {
+            sendToNativeHost(message, retryCount + 1)
+              .then(resolve)
+              .catch(reject);
+          }, RETRY_DELAY);
+        } else {
+          reject(error);
+        }
+      }
+    }
   });
 }
 
@@ -139,6 +227,15 @@ async function handleCommand(message) {
       case "focusTab":
         result = await focusTab(tabId);
         break;
+      case "getTabInfo":
+        result = await getTabInfo(tabId);
+        break;
+      case "findTabs":
+        result = await findTabs(data);
+        break;
+      case "screenshotAllTabs":
+        result = await screenshotAllTabs(data);
+        break;
       case "refresh":
       case "reload":
         result = await refreshTab(tabId, data);
@@ -173,27 +270,112 @@ async function handleCommand(message) {
 // Screenshot functionality
 async function takeScreenshot(tabId, options = {}) {
   try {
-    const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const currentTab = (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const targetTab = tabId ? await browser.tabs.get(tabId) : currentTab;
 
-    const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, {
-      format: options.format || "png",
-      quality: options.quality || 90
-    });
+    // Check if we need to temporarily focus the tab for screenshot
+    const needsFocus = tabId && tabId !== currentTab?.id;
+    let originalActiveTab = null;
 
-    // If full page screenshot requested, use content script
-    if (options.fullPage) {
-      const fullPageData = await browser.tabs.sendMessage(tab.id, {
-        action: "captureFullPage",
-        format: options.format || "png"
+    if (needsFocus && options.allowFocus !== false) {
+      // Store original active tab to restore later
+      originalActiveTab = currentTab;
+
+      // Focus the target tab temporarily
+      await browser.tabs.update(targetTab.id, { active: true });
+
+      // Small delay to let the tab render
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    try {
+      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, {
+        format: options.format || "png",
+        quality: options.quality || 90
       });
-      return { success: true, data: fullPageData, type: "fullPage" };
+
+      // If full page screenshot requested, use content script
+      if (options.fullPage) {
+        const fullPageData = await browser.tabs.sendMessage(targetTab.id, {
+          action: "captureFullPage",
+          format: options.format || "png"
+        });
+        return { success: true, data: fullPageData, type: "fullPage" };
+      }
+
+      return {
+        success: true,
+        data: dataUrl,
+        type: "visible",
+        tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+        wasFocused: needsFocus
+      };
+    } finally {
+      // Restore original tab if we changed focus
+      if (originalActiveTab && options.restoreFocus !== false) {
+        await browser.tabs.update(originalActiveTab.id, { active: true });
+      }
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Screenshot all tabs (cycles through them)
+async function screenshotAllTabs(options = {}) {
+  try {
+    const tabs = await browser.tabs.query({});
+    const currentTab = (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const results = [];
+
+    // Filter tabs by URL pattern if provided
+    let targetTabs = tabs.filter(t => !t.url.startsWith('about:') && !t.url.startsWith('moz-extension:'));
+
+    if (options.urlPattern) {
+      const regex = new RegExp(options.urlPattern);
+      targetTabs = targetTabs.filter(t => regex.test(t.url));
+    }
+
+    for (const tab of targetTabs) {
+      try {
+        // Focus the tab
+        await browser.tabs.update(tab.id, { active: true });
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        // Take screenshot
+        const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, {
+          format: options.format || "png",
+          quality: options.quality || 90
+        });
+
+        results.push({
+          success: true,
+          tabId: tab.id,
+          url: tab.url,
+          title: tab.title,
+          data: options.includeData ? dataUrl : undefined,
+          timestamp: Date.now()
+        });
+      } catch (e) {
+        results.push({
+          success: false,
+          tabId: tab.id,
+          url: tab.url,
+          error: e.message
+        });
+      }
+    }
+
+    // Restore original tab
+    if (currentTab) {
+      await browser.tabs.update(currentTab.id, { active: true });
     }
 
     return {
       success: true,
-      data: dataUrl,
-      type: "visible",
-      tab: { id: tab.id, url: tab.url, title: tab.title }
+      screenshots: results,
+      count: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length
     };
   } catch (error) {
     return { success: false, error: error.message };
@@ -362,15 +544,124 @@ async function waitForElement(tabId, data) {
 async function getAllTabs() {
   try {
     const tabs = await browser.tabs.query({});
+    const windows = await browser.windows.getAll();
+    const windowMap = new Map(windows.map(w => [w.id, w]));
+
     return {
       success: true,
-      tabs: tabs.map(t => ({
+      tabs: tabs.map(t => {
+        const win = windowMap.get(t.windowId);
+        return {
+          id: t.id,
+          url: t.url,
+          title: t.title,
+          active: t.active,
+          windowId: t.windowId,
+          index: t.index,
+          pinned: t.pinned,
+          highlighted: t.highlighted,
+          status: t.status,  // "loading" or "complete"
+          discarded: t.discarded,  // tab unloaded to save memory
+          incognito: t.incognito,
+          audible: t.audible,  // playing audio
+          mutedInfo: t.mutedInfo,
+          favIconUrl: t.favIconUrl,
+          windowFocused: win?.focused || false,
+          windowState: win?.state  // "normal", "minimized", "maximized", "fullscreen"
+        };
+      }),
+      windowCount: windows.length,
+      totalTabs: tabs.length,
+      summary: {
+        active: tabs.filter(t => t.active).length,
+        loading: tabs.filter(t => t.status === 'loading').length,
+        discarded: tabs.filter(t => t.discarded).length,
+        audible: tabs.filter(t => t.audible).length
+      }
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Get detailed info about a specific tab
+async function getTabInfo(tabId) {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    const win = await browser.windows.get(tab.windowId);
+
+    // Try to get page info from content script
+    let pageInfo = null;
+    try {
+      pageInfo = await browser.tabs.sendMessage(tabId, { action: "getPageInfo" });
+    } catch (e) {
+      // Content script may not be loaded
+      pageInfo = { error: "Content script not available" };
+    }
+
+    return {
+      success: true,
+      tab: {
+        id: tab.id,
+        url: tab.url,
+        title: tab.title,
+        active: tab.active,
+        windowId: tab.windowId,
+        index: tab.index,
+        pinned: tab.pinned,
+        status: tab.status,
+        discarded: tab.discarded,
+        audible: tab.audible,
+        favIconUrl: tab.favIconUrl
+      },
+      window: {
+        id: win.id,
+        focused: win.focused,
+        state: win.state,
+        type: win.type
+      },
+      pageInfo: pageInfo
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Find tabs by URL pattern
+async function findTabs(options) {
+  try {
+    const tabs = await browser.tabs.query({});
+    let filtered = tabs;
+
+    if (options.url) {
+      filtered = filtered.filter(t => t.url.startsWith(options.url));
+    }
+    if (options.urlPattern) {
+      const regex = new RegExp(options.urlPattern);
+      filtered = filtered.filter(t => regex.test(t.url));
+    }
+    if (options.title) {
+      const titleLower = options.title.toLowerCase();
+      filtered = filtered.filter(t => t.title?.toLowerCase().includes(titleLower));
+    }
+    if (options.active !== undefined) {
+      filtered = filtered.filter(t => t.active === options.active);
+    }
+    if (options.audible !== undefined) {
+      filtered = filtered.filter(t => t.audible === options.audible);
+    }
+
+    return {
+      success: true,
+      tabs: filtered.map(t => ({
         id: t.id,
         url: t.url,
         title: t.title,
         active: t.active,
-        windowId: t.windowId
-      }))
+        windowId: t.windowId,
+        status: t.status
+      })),
+      count: filtered.length
     };
   } catch (error) {
     return { success: false, error: error.message };
