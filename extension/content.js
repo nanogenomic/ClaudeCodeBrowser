@@ -17,6 +17,278 @@
   let highlightOverlay = null;
   let inspectorMode = false;
 
+  // ============================================
+  // Console and Network Logging Infrastructure
+  // ============================================
+
+  // Logging state
+  let loggingEnabled = false;
+  let consoleLogs = [];
+  let networkLogs = [];
+  const MAX_LOG_ENTRIES = 500;
+
+  // Original console methods (saved for restoration)
+  const originalConsole = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    info: console.info.bind(console),
+    debug: console.debug.bind(console)
+  };
+
+  // Console interceptor
+  function interceptConsole() {
+    ['log', 'warn', 'error', 'info', 'debug'].forEach(method => {
+      console[method] = function(...args) {
+        if (loggingEnabled) {
+          const entry = {
+            level: method,
+            timestamp: new Date().toISOString(),
+            message: args.map(arg => {
+              try {
+                if (typeof arg === 'object') {
+                  return JSON.stringify(arg, null, 2);
+                }
+                return String(arg);
+              } catch (e) {
+                return String(arg);
+              }
+            }).join(' '),
+            url: window.location.href
+          };
+          consoleLogs.push(entry);
+          if (consoleLogs.length > MAX_LOG_ENTRIES) {
+            consoleLogs.shift();
+          }
+        }
+        originalConsole[method].apply(console, args);
+      };
+    });
+  }
+
+  // Restore original console
+  function restoreConsole() {
+    Object.keys(originalConsole).forEach(method => {
+      console[method] = originalConsole[method];
+    });
+  }
+
+  // Network request interceptor (fetch)
+  const originalFetch = window.fetch;
+  window.fetch = async function(...args) {
+    const startTime = Date.now();
+    const [resource, init] = args;
+    const url = typeof resource === 'string' ? resource : resource.url;
+    const method = init?.method || 'GET';
+
+    const logEntry = {
+      type: 'fetch',
+      method: method,
+      url: url,
+      requestHeaders: init?.headers || {},
+      requestBody: init?.body ? String(init.body).substring(0, 1000) : null,
+      startTime: new Date().toISOString(),
+      pageUrl: window.location.href
+    };
+
+    try {
+      const response = await originalFetch.apply(this, args);
+      const endTime = Date.now();
+
+      if (loggingEnabled) {
+        logEntry.status = response.status;
+        logEntry.statusText = response.statusText;
+        logEntry.duration = endTime - startTime;
+        logEntry.responseHeaders = Object.fromEntries(response.headers.entries());
+
+        // Clone response to read body without consuming it
+        const clone = response.clone();
+        try {
+          const contentType = response.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            const body = await clone.json();
+            logEntry.responseBody = JSON.stringify(body, null, 2).substring(0, 5000);
+          } else if (contentType.includes('text/')) {
+            logEntry.responseBody = (await clone.text()).substring(0, 5000);
+          } else {
+            logEntry.responseBody = '[Binary data]';
+          }
+        } catch (e) {
+          logEntry.responseBody = '[Could not read response]';
+        }
+
+        networkLogs.push(logEntry);
+        if (networkLogs.length > MAX_LOG_ENTRIES) {
+          networkLogs.shift();
+        }
+      }
+
+      return response;
+    } catch (error) {
+      if (loggingEnabled) {
+        logEntry.error = error.message;
+        logEntry.duration = Date.now() - startTime;
+        networkLogs.push(logEntry);
+        if (networkLogs.length > MAX_LOG_ENTRIES) {
+          networkLogs.shift();
+        }
+      }
+      throw error;
+    }
+  };
+
+  // XHR interceptor
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  const originalXHRSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    this._logData = {
+      type: 'xhr',
+      method: method,
+      url: url,
+      pageUrl: window.location.href
+    };
+    return originalXHROpen.apply(this, [method, url, ...rest]);
+  };
+
+  XMLHttpRequest.prototype.send = function(body) {
+    if (loggingEnabled && this._logData) {
+      const startTime = Date.now();
+      this._logData.startTime = new Date().toISOString();
+      this._logData.requestBody = body ? String(body).substring(0, 1000) : null;
+
+      this.addEventListener('load', () => {
+        this._logData.status = this.status;
+        this._logData.statusText = this.statusText;
+        this._logData.duration = Date.now() - startTime;
+        this._logData.responseBody = this.responseText?.substring(0, 5000);
+        networkLogs.push({ ...this._logData });
+        if (networkLogs.length > MAX_LOG_ENTRIES) {
+          networkLogs.shift();
+        }
+      });
+
+      this.addEventListener('error', () => {
+        this._logData.error = 'Network error';
+        this._logData.duration = Date.now() - startTime;
+        networkLogs.push({ ...this._logData });
+        if (networkLogs.length > MAX_LOG_ENTRIES) {
+          networkLogs.shift();
+        }
+      });
+    }
+    return originalXHRSend.apply(this, [body]);
+  };
+
+  // Initialize console interception (always intercepts, but only logs when enabled)
+  interceptConsole();
+
+  // Logging control functions
+  function startLogging(options = {}) {
+    loggingEnabled = true;
+    if (options.clearExisting) {
+      consoleLogs = [];
+      networkLogs = [];
+    }
+    return {
+      success: true,
+      message: 'Logging started',
+      consoleLogsCount: consoleLogs.length,
+      networkLogsCount: networkLogs.length
+    };
+  }
+
+  function stopLogging() {
+    loggingEnabled = false;
+    return {
+      success: true,
+      message: 'Logging stopped',
+      consoleLogsCount: consoleLogs.length,
+      networkLogsCount: networkLogs.length
+    };
+  }
+
+  function getConsoleLogs(options = {}) {
+    let logs = [...consoleLogs];
+
+    // Filter by level if specified
+    if (options.level) {
+      logs = logs.filter(log => log.level === options.level);
+    }
+
+    // Filter by search term
+    if (options.search) {
+      const searchLower = options.search.toLowerCase();
+      logs = logs.filter(log => log.message.toLowerCase().includes(searchLower));
+    }
+
+    // Limit results
+    const limit = options.limit || 100;
+    if (logs.length > limit) {
+      logs = logs.slice(-limit);
+    }
+
+    return {
+      success: true,
+      logs: logs,
+      totalCount: consoleLogs.length,
+      returnedCount: logs.length,
+      loggingEnabled: loggingEnabled
+    };
+  }
+
+  function getNetworkLogs(options = {}) {
+    let logs = [...networkLogs];
+
+    // Filter by URL pattern
+    if (options.urlPattern) {
+      const pattern = new RegExp(options.urlPattern, 'i');
+      logs = logs.filter(log => pattern.test(log.url));
+    }
+
+    // Filter by method
+    if (options.method) {
+      logs = logs.filter(log => log.method.toUpperCase() === options.method.toUpperCase());
+    }
+
+    // Filter by status
+    if (options.status) {
+      logs = logs.filter(log => log.status === options.status);
+    }
+
+    // Filter errors only
+    if (options.errorsOnly) {
+      logs = logs.filter(log => log.error || (log.status && log.status >= 400));
+    }
+
+    // Limit results
+    const limit = options.limit || 100;
+    if (logs.length > limit) {
+      logs = logs.slice(-limit);
+    }
+
+    return {
+      success: true,
+      logs: logs,
+      totalCount: networkLogs.length,
+      returnedCount: logs.length,
+      loggingEnabled: loggingEnabled
+    };
+  }
+
+  function clearLogs(options = {}) {
+    if (options.console !== false) {
+      consoleLogs = [];
+    }
+    if (options.network !== false) {
+      networkLogs = [];
+    }
+    return {
+      success: true,
+      message: 'Logs cleared'
+    };
+  }
+
   // Message listener
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleMessage(message)
@@ -73,6 +345,17 @@
         return getComputedStyles(message);
       case "getBoundingRect":
         return getBoundingRect(message);
+      // Console and network logging actions
+      case "startLogging":
+        return startLogging(message);
+      case "stopLogging":
+        return stopLogging();
+      case "getConsoleLogs":
+        return getConsoleLogs(message);
+      case "getNetworkLogs":
+        return getNetworkLogs(message);
+      case "clearLogs":
+        return clearLogs(message);
       default:
         throw new Error(`Unknown action: ${message.action}`);
     }

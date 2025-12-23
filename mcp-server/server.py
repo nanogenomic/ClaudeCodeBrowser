@@ -486,6 +486,68 @@ MCP_TOOLS: List[MCPTool] = [
                 "tab_id": {"type": "integer", "description": "Optional tab ID."}
             }
         }
+    ),
+    # Console and Network Logging Tools
+    MCPTool(
+        name="browser_start_logging",
+        description="Start capturing console logs and network requests from the browser. Use this before performing actions you want to monitor. Logs are accumulated until you retrieve them.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "clear_existing": {"type": "boolean", "description": "Clear any existing logs before starting.", "default": False},
+                "tab_id": {"type": "integer", "description": "Optional tab ID. If not specified, uses active tab."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_stop_logging",
+        description="Stop capturing console logs and network requests. Logs are preserved and can still be retrieved.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "Optional tab ID. If not specified, uses active tab."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_get_console_logs",
+        description="Retrieve captured console logs (console.log, console.error, console.warn, etc.). Useful for debugging AI chat interfaces, seeing errors, and monitoring application state.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "level": {"type": "string", "enum": ["log", "warn", "error", "info", "debug"], "description": "Filter by log level."},
+                "search": {"type": "string", "description": "Filter logs containing this text."},
+                "limit": {"type": "integer", "description": "Maximum number of logs to return.", "default": 100},
+                "tab_id": {"type": "integer", "description": "Optional tab ID. If not specified, uses active tab."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_get_network_logs",
+        description="Retrieve captured network requests and responses (fetch/XHR). Perfect for debugging API calls, seeing request/response data, and monitoring AI chat communications.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url_pattern": {"type": "string", "description": "Regex pattern to filter by URL."},
+                "method": {"type": "string", "description": "Filter by HTTP method (GET, POST, etc.)."},
+                "status": {"type": "integer", "description": "Filter by HTTP status code."},
+                "errors_only": {"type": "boolean", "description": "Only return failed requests.", "default": False},
+                "limit": {"type": "integer", "description": "Maximum number of logs to return.", "default": 100},
+                "tab_id": {"type": "integer", "description": "Optional tab ID. If not specified, uses active tab."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_clear_logs",
+        description="Clear all captured console and/or network logs.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "console": {"type": "boolean", "description": "Clear console logs.", "default": True},
+                "network": {"type": "boolean", "description": "Clear network logs.", "default": True},
+                "tab_id": {"type": "integer", "description": "Optional tab ID. If not specified, uses active tab."}
+            }
+        }
     )
 ]
 
@@ -704,7 +766,13 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             'browser_observe_element': 'observeElement',
             'browser_stop_observing': 'stopObserving',
             'browser_scroll_and_capture': 'scrollAndCapture',
-            'browser_click_and_wait': 'clickAndWait'
+            'browser_click_and_wait': 'clickAndWait',
+            # Console and network logging tools
+            'browser_start_logging': 'startLogging',
+            'browser_stop_logging': 'stopLogging',
+            'browser_get_console_logs': 'getConsoleLogs',
+            'browser_get_network_logs': 'getNetworkLogs',
+            'browser_clear_logs': 'clearLogs'
         }
 
         if tool_name not in tool_action_map:

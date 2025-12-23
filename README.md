@@ -263,6 +263,74 @@ agent.fill_form({
 | `browser_stop_observing` | Stop observing and get accumulated changes |
 | `browser_scroll_and_capture` | Scroll through page capturing element info |
 
+#### Console & Network Logging
+| Tool | Description |
+|------|-------------|
+| `browser_start_logging` | Start capturing console logs and network requests |
+| `browser_stop_logging` | Stop capturing logs (logs are preserved) |
+| `browser_get_console_logs` | Retrieve captured console.log/error/warn/info/debug |
+| `browser_get_network_logs` | Retrieve captured fetch/XHR requests and responses |
+| `browser_clear_logs` | Clear all captured logs |
+
+### Console & Network Logging
+
+Essential for debugging AI chat interfaces and monitoring API communications:
+
+```bash
+# Start logging before performing actions
+browser-agent --start-logging
+
+# Perform actions that you want to monitor...
+
+# Get console logs (errors, warnings, debug output)
+browser-agent --get-console-logs
+
+# Get network logs (API requests and responses)
+browser-agent --get-network-logs
+
+# Filter console logs by level
+browser-agent --get-console-logs --level error
+
+# Filter network logs by URL pattern
+browser-agent --get-network-logs --url-pattern "api/chat"
+
+# Stop logging
+browser-agent --stop-logging
+```
+
+#### Python API for Logging
+```python
+agent = BrowserAutomationAgent()
+
+# Start logging
+agent.start_logging(clear_existing=True)
+
+# Perform actions...
+agent.navigate("https://example.com/chat")
+agent.type_text("Hello!", selector="#chat-input")
+agent.click(selector="#send-button")
+
+# Get console logs
+console_logs = agent.get_console_logs(level="error")  # Filter by level
+for log in console_logs['logs']:
+    print(f"[{log['level']}] {log['message']}")
+
+# Get network logs
+network_logs = agent.get_network_logs(url_pattern="api/chat")
+for req in network_logs['logs']:
+    print(f"{req['method']} {req['url']} -> {req['status']}")
+    print(f"Response: {req['responseBody'][:200]}...")
+
+# Stop logging
+agent.stop_logging()
+```
+
+#### Use Cases
+- **Debug AI Chat Interfaces**: See console errors and API request/response data
+- **Monitor API Communications**: Track all fetch/XHR requests with full bodies
+- **Troubleshoot Errors**: Filter console logs by error level
+- **Verify Integrations**: Confirm API calls are being made correctly
+
 ### Page Refresh Commands
 
 Essential for development workflows - refresh browser tabs after server restarts:

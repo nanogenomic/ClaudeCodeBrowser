@@ -249,6 +249,22 @@ async function handleCommand(message) {
       case "reloadByUrl":
         result = await reloadTabsByUrl(data);
         break;
+      // Console and network logging commands
+      case "startLogging":
+        result = await sendToContentScript(tabId, { action: "startLogging", ...data });
+        break;
+      case "stopLogging":
+        result = await sendToContentScript(tabId, { action: "stopLogging" });
+        break;
+      case "getConsoleLogs":
+        result = await sendToContentScript(tabId, { action: "getConsoleLogs", ...data });
+        break;
+      case "getNetworkLogs":
+        result = await sendToContentScript(tabId, { action: "getNetworkLogs", ...data });
+        break;
+      case "clearLogs":
+        result = await sendToContentScript(tabId, { action: "clearLogs", ...data });
+        break;
       default:
         result = { success: false, error: `Unknown action: ${action}` };
     }
@@ -377,6 +393,17 @@ async function screenshotAllTabs(options = {}) {
       count: results.filter(r => r.success).length,
       failed: results.filter(r => !r.success).length
     };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Generic helper to send message to content script
+async function sendToContentScript(tabId, message) {
+  try {
+    const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const result = await browser.tabs.sendMessage(tab.id, message);
+    return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
   }
