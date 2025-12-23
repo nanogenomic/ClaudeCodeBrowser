@@ -92,6 +92,15 @@ The native messaging host (`claudecodebrowser_host.py`) provides an alternative 
 
 ## Installation
 
+### Prerequisites
+
+**System Python websockets** (required for WebSocket server on port 8766):
+```bash
+sudo apt install python3-websockets
+```
+
+Without this, the server runs in HTTP-only mode and `browsers_connected` will always show 0.
+
 ### Quick Install
 
 ```bash
