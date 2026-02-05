@@ -43,6 +43,7 @@ except ImportError:
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import threading
+from threading import Event
 import socket
 
 # Configure logging
@@ -723,6 +724,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == '/browser/response':
             # Response from browser extension
+            request_id = data.get('requestId')
+            logger.debug(f"Received browser response for requestId: {request_id}")
+
+            # Check if there's a pending request waiting for this response
+            if hasattr(self.server, '_pending_responses') and request_id:
+                if request_id in self.server._pending_responses:
+                    logger.info(f"Signaling response for requestId: {request_id}")
+                    self.server._pending_responses[request_id]['result'] = data
+                    self.server._pending_responses[request_id]['event'].set()
+                else:
+                    logger.debug(f"No pending request for requestId: {request_id}")
+
+            # Also handle WebSocket connections
             connection_manager.handle_response(data)
             self.send_json_response({'success': True})
 
@@ -814,37 +828,53 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 logger.error(f"WebSocket command failed: {e}")
                 # Fall through to HTTP method
 
-        # No WebSocket connection - try HTTP polling with native host
-        # The extension polls /browser/poll and we store commands there
+        # No WebSocket connection - use HTTP polling with response waiting
+        request_id = str(time.time())
         command_data = {
             'action': action,
             'tabId': tab_id,
             'data': arguments,
-            'requestId': str(time.time())
+            'requestId': request_id
+        }
+
+        # Initialize response storage if not exists
+        if not hasattr(self.server, '_pending_responses'):
+            self.server._pending_responses = {}
+
+        # Create an event to wait for response
+        response_event = Event()
+        self.server._pending_responses[request_id] = {
+            'event': response_event,
+            'result': None
         }
 
         # Store command for extension to poll
         self.server._pending_commands = getattr(self.server, '_pending_commands', [])
         self.server._pending_commands.append(command_data)
 
-        # For screenshot specifically, we can return info about where to save
-        if action == 'screenshot':
-            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-            filepath = SCREENSHOTS_DIR / filename
-            return {
-                'success': True,
-                'message': 'Screenshot command queued',
-                'save_path': str(filepath),
-                'screenshots_dir': str(SCREENSHOTS_DIR),
-                'action': action,
-                'note': 'Screenshot will be saved when browser extension responds'
-            }
+        logger.info(f"Queued command {action} with requestId {request_id}, waiting for response...")
 
-        return {
-            'success': True,
-            'message': f'Command {action} queued for browser',
-            'action': action
-        }
+        # Wait for response (with timeout)
+        timeout = 30
+        if response_event.wait(timeout=timeout):
+            result = self.server._pending_responses[request_id]['result']
+            del self.server._pending_responses[request_id]
+            logger.info(f"Got response for {action}: success={result.get('success')}")
+
+            # Handle screenshot saving if needed
+            if action == 'screenshot' and result.get('success') and result.get('data'):
+                return self._save_screenshot(result, arguments)
+
+            return result
+        else:
+            # Timeout - clean up and return error
+            del self.server._pending_responses[request_id]
+            logger.warning(f"Command {action} timed out after {timeout}s")
+            return {
+                'success': False,
+                'error': f'Command {action} timed out waiting for browser response after {timeout}s',
+                'action': action
+            }
 
     def _save_screenshot(self, result: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Save screenshot data to file."""
