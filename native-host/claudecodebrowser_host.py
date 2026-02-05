@@ -50,7 +50,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', 'localhost')
+# Use 127.0.0.1 instead of localhost to avoid IPv6 resolution issues.
+# On systems where localhost resolves to ::1 (IPv6) first, the connection
+# times out because the server only listens on 127.0.0.1 (IPv4).
+MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', '127.0.0.1')
 MCP_SERVER_PORT = int(os.environ.get('CLAUDE_MCP_PORT', '8765'))
 MCP_SERVER_URL = f'http://{MCP_SERVER_HOST}:{MCP_SERVER_PORT}'
 
