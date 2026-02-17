@@ -50,7 +50,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', 'localhost')
+# Use 127.0.0.1 instead of localhost to avoid IPv6 resolution issues.
+# On systems where localhost resolves to ::1 (IPv6) first, the connection
+# times out because the server only listens on 127.0.0.1 (IPv4).
+MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', '127.0.0.1')
 MCP_SERVER_PORT = int(os.environ.get('CLAUDE_MCP_PORT', '8765'))
 MCP_SERVER_URL = f'http://{MCP_SERVER_HOST}:{MCP_SERVER_PORT}'
 
@@ -362,20 +365,25 @@ def process_message(message):
     """Process an incoming message from the extension."""
     logger.info(f"Processing message: {message.get('action', 'unknown')}")
 
-    # Check if this is a response to a screenshot command - save it!
-    if message.get('success') and message.get('data') and 'requestId' in message:
-        # This looks like a screenshot response - save it
-        logger.info("Received screenshot data, saving...")
-        save_result = handle_local_command({
-            'action': 'saveScreenshot',
-            'data': message.get('data'),
-            'filename': f'screenshot_{int(time.time())}.png'
-        })
-        if save_result:
-            logger.info(f"Screenshot saved: {save_result.get('filepath')}")
-            # Also forward the response to the server
-            forward_response_to_server(message)
-            return save_result
+    # Check if this is a response from the extension (has requestId but no action)
+    # Responses have 'requestId' and typically 'success' but no 'action'
+    if 'requestId' in message and 'action' not in message:
+        logger.info(f"Forwarding response for requestId: {message.get('requestId')}")
+
+        # Special handling for screenshots - save to file
+        if message.get('data') and message.get('success'):
+            logger.info("Received screenshot data, saving...")
+            save_result = handle_local_command({
+                'action': 'saveScreenshot',
+                'data': message.get('data'),
+                'filename': f'screenshot_{int(time.time())}.png'
+            })
+            if save_result:
+                logger.info(f"Screenshot saved: {save_result.get('filepath')}")
+
+        # Forward ALL responses to the server (not just screenshots)
+        forward_response_to_server(message)
+        return message
 
     # Try to handle locally first
     local_result = handle_local_command(message)
