@@ -41,6 +41,7 @@ except ImportError:
 
 # HTTP server imports
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 import threading
 import socket
@@ -558,6 +559,7 @@ class BrowserConnectionManager:
     def __init__(self):
         self.browser_connections = {}
         self.pending_requests = {}
+        self.http_pending_requests = {}
         self.request_counter = 0
 
     def register_browser(self, browser_id: str, connection):
@@ -607,6 +609,11 @@ class BrowserConnectionManager:
             future = self.pending_requests[request_id]
             if not future.done():
                 future.set_result(response)
+        # Also check HTTP polling pending requests
+        if request_id and request_id in self.http_pending_requests:
+            event, result_holder = self.http_pending_requests[request_id]
+            result_holder['response'] = response
+            event.set()
 
 
 # Global connection manager
@@ -814,37 +821,41 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 logger.error(f"WebSocket command failed: {e}")
                 # Fall through to HTTP method
 
-        # No WebSocket connection - try HTTP polling with native host
+        # No WebSocket connection - use HTTP polling with native host
         # The extension polls /browser/poll and we store commands there
+        request_id = str(time.time())
         command_data = {
             'action': action,
             'tabId': tab_id,
             'data': arguments,
-            'requestId': str(time.time())
+            'requestId': request_id
         }
+
+        # Set up event to wait for response
+        event = threading.Event()
+        result_holder = {}
+        connection_manager.http_pending_requests[request_id] = (event, result_holder)
 
         # Store command for extension to poll
         self.server._pending_commands = getattr(self.server, '_pending_commands', [])
         self.server._pending_commands.append(command_data)
 
-        # For screenshot specifically, we can return info about where to save
-        if action == 'screenshot':
-            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-            filepath = SCREENSHOTS_DIR / filename
-            return {
-                'success': True,
-                'message': 'Screenshot command queued',
-                'save_path': str(filepath),
-                'screenshots_dir': str(SCREENSHOTS_DIR),
-                'action': action,
-                'note': 'Screenshot will be saved when browser extension responds'
-            }
+        # Wait for browser response (up to 30 seconds)
+        if event.wait(timeout=30.0):
+            connection_manager.http_pending_requests.pop(request_id, None)
+            response = result_holder.get('response', {})
 
-        return {
-            'success': True,
-            'message': f'Command {action} queued for browser',
-            'action': action
-        }
+            # Handle screenshot saving
+            if action == 'screenshot' and response.get('success') and response.get('data'):
+                return self._save_screenshot(response, arguments)
+
+            return response
+        else:
+            connection_manager.http_pending_requests.pop(request_id, None)
+            return {
+                'success': False,
+                'error': f'Command {action} timed out waiting for browser response'
+            }
 
     def _save_screenshot(self, result: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Save screenshot data to file."""
@@ -886,9 +897,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             }
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTP server that handles each request in a new thread.
+
+    Required because execute_tool() blocks waiting for browser responses,
+    while /browser/poll and /browser/response need to be served concurrently.
+    """
+    daemon_threads = True
+
+
 def run_http_server():
     """Run the HTTP server."""
-    server = HTTPServer((HOST, HTTP_PORT), MCPHTTPHandler)
+    server = ThreadingHTTPServer((HOST, HTTP_PORT), MCPHTTPHandler)
     logger.info(f"HTTP server starting on {HOST}:{HTTP_PORT}")
     server.serve_forever()
 
@@ -934,14 +954,14 @@ async def run_websocket_server():
 def main():
     """Main entry point."""
     print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║           ClaudeCodeBrowser MCP Server v1.0.0                ║
-╠══════════════════════════════════════════════════════════════╣
-║  HTTP Server:      http://{HOST}:{HTTP_PORT:<5}                       ║
-║  WebSocket Server: ws://{HOST}:{WS_PORT:<5}                         ║
-║  Screenshots:      {str(SCREENSHOTS_DIR):<40} ║
-║  Logs:             {str(LOG_FILE):<40} ║
-╚══════════════════════════════════════════════════════════════╝
++--------------------------------------------------------------+
+|           ClaudeCodeBrowser MCP Server v1.0.0                |
++--------------------------------------------------------------+
+|  HTTP Server:      http://{HOST}:{HTTP_PORT:<5}                       |
+|  WebSocket Server: ws://{HOST}:{WS_PORT:<5}                         |
+|  Screenshots:      {str(SCREENSHOTS_DIR):<40} |
+|  Logs:             {str(LOG_FILE):<40} |
++--------------------------------------------------------------+
     """)
 
     # Start HTTP server in a thread
