@@ -139,7 +139,42 @@ cd /mnt/backup/ClaudeCodeBrowser
      "mcpServers": {
        "claudecodebrowser": {
          "command": "python3",
-         "args": ["/home/YOUR_USER/.claudecodebrowser/mcp-server/server.py"]
+         "args": ["/home/YOUR_USER/.claudecodebrowser/mcp-server/stdio_wrapper.py"]
+       }
+     }
+   }
+   ```
+
+### Windows Installation
+
+1. **Install the Firefox extension:**
+   - Open Firefox and go to `about:debugging`
+   - Click "This Firefox"
+   - Click "Load Temporary Add-on..."
+   - Select `extension/manifest.json`
+
+2. **Register the native messaging host:**
+   Firefox on Windows uses the Registry to find native messaging hosts.
+   Update the path in `native-host/claudecodebrowser.json` to point to the `.bat` wrapper:
+   ```json
+   {
+     "path": "C:\\path\\to\\ClaudeCodeBrowser\\native-host\\claudecodebrowser_host.bat"
+   }
+   ```
+   Then register it:
+   ```powershell
+   New-Item -Path 'HKCU:\Software\Mozilla\NativeMessagingHosts\claudecodebrowser' -Force | Out-Null
+   Set-ItemProperty -Path 'HKCU:\Software\Mozilla\NativeMessagingHosts\claudecodebrowser' -Name '(Default)' -Value 'C:\path\to\ClaudeCodeBrowser\native-host\claudecodebrowser.json'
+   ```
+
+3. **Configure Claude Code MCP:**
+   Add to `~/.claude/settings.json`:
+   ```json
+   {
+     "mcpServers": {
+       "claudecodebrowser": {
+         "command": "python",
+         "args": ["C:/path/to/ClaudeCodeBrowser/mcp-server/stdio_wrapper.py"]
        }
      }
    }

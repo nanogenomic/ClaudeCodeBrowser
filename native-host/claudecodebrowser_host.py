@@ -50,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', 'localhost')
+MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', '127.0.0.1')
 MCP_SERVER_PORT = int(os.environ.get('CLAUDE_MCP_PORT', '8765'))
 MCP_SERVER_URL = f'http://{MCP_SERVER_HOST}:{MCP_SERVER_PORT}'
 
@@ -362,20 +362,23 @@ def process_message(message):
     """Process an incoming message from the extension."""
     logger.info(f"Processing message: {message.get('action', 'unknown')}")
 
-    # Check if this is a response to a screenshot command - save it!
-    if message.get('success') and message.get('data') and 'requestId' in message:
-        # This looks like a screenshot response - save it
-        logger.info("Received screenshot data, saving...")
-        save_result = handle_local_command({
-            'action': 'saveScreenshot',
-            'data': message.get('data'),
-            'filename': f'screenshot_{int(time.time())}.png'
-        })
-        if save_result:
-            logger.info(f"Screenshot saved: {save_result.get('filepath')}")
-            # Also forward the response to the server
-            forward_response_to_server(message)
-            return save_result
+    # Check if this is a response from the extension (has requestId and success)
+    if 'requestId' in message and 'success' in message:
+        logger.info(f"Forwarding response for requestId: {message.get('requestId')}")
+
+        # Save screenshot data locally if present
+        if message.get('success') and message.get('data'):
+            save_result = handle_local_command({
+                'action': 'saveScreenshot',
+                'data': message.get('data'),
+                'filename': f'screenshot_{int(time.time())}.png'
+            })
+            if save_result:
+                logger.info(f"Screenshot saved: {save_result.get('filepath')}")
+
+        # Forward all responses to /browser/response
+        forward_response_to_server(message)
+        return {'success': True, 'forwarded': True}
 
     # Try to handle locally first
     local_result = handle_local_command(message)
