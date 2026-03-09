@@ -24,6 +24,8 @@ import asyncio
 import json
 import logging
 import os
+import secrets
+import stat
 import sys
 import base64
 import time
@@ -59,6 +61,26 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('ClaudeCodeBrowser.MCPServer')
+
+# API token for localhost HTTP authentication
+TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
+
+
+def load_or_create_api_token() -> str:
+    """Load existing API token or generate a new one on first run."""
+    if TOKEN_FILE.exists():
+        token = TOKEN_FILE.read_text().strip()
+        if token:
+            return token
+    token = secrets.token_hex(32)
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.write_text(token)
+    TOKEN_FILE.chmod(0o600)
+    logger.info(f"Generated new API token saved to {TOKEN_FILE}")
+    return token
+
+
+API_TOKEN = load_or_create_api_token()
 
 # Configuration
 HOST = os.environ.get('CLAUDE_BROWSER_HOST', '127.0.0.1')
@@ -623,18 +645,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         """Send a JSON response."""
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # No CORS headers: all legitimate callers (stdio_wrapper, native host) are
+        # local processes using urllib, not browser fetch requests. Omitting
+        # Access-Control-Allow-Origin blocks cross-origin browser requests entirely.
         self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
 
+    def _check_auth(self) -> bool:
+        """Validate the X-API-Key header against the server token."""
+        return self.headers.get('X-API-Key') == API_TOKEN
+
     def do_OPTIONS(self):
-        """Handle CORS preflight requests."""
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        """Reject CORS preflight: no cross-origin access is needed or allowed."""
+        self.send_response(403)
         self.end_headers()
 
     def do_GET(self):
@@ -642,12 +665,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == '/health':
+            # Health endpoint is unauthenticated so native host can probe it without the token
             self.send_json_response({
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
                 'version': '1.0.0',
                 'browsers_connected': len(connection_manager.browser_connections)
             })
+
+        elif not self._check_auth():
+            self.send_json_response({'error': 'Unauthorized'}, 403)
 
         elif parsed.path == '/mcp/tools':
             # Return list of available MCP tools
@@ -688,6 +715,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
+        if not self._check_auth():
+            self.send_json_response({'error': 'Unauthorized'}, 403)
+            return
+
         parsed = urlparse(self.path)
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
@@ -731,7 +762,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an MCP tool by sending command to browser via native host."""
-        logger.info(f"Executing tool: {tool_name} with args: {arguments}")
+        # Redact fields that may contain credentials or arbitrary code before logging
+        _SENSITIVE = {'text', 'script', 'value', 'password'}
+        log_args = {k: ('***' if k in _SENSITIVE else v) for k, v in arguments.items()}
+        logger.info(f"Executing tool: {tool_name} with args: {log_args}")
 
         # Map tool names to actions
         tool_action_map = {
@@ -829,7 +863,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # For screenshot specifically, we can return info about where to save
         if action == 'screenshot':
-            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            filename = Path(arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png').name
             filepath = SCREENSHOTS_DIR / filename
             return {
                 'success': True,
@@ -851,7 +885,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         try:
             data = result.get('data', '')
             save_to_file = arguments.get('save_to_file', True)
-            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            # Strip directory components to prevent path traversal
+            filename = Path(arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png').name
 
             if not save_to_file:
                 return result

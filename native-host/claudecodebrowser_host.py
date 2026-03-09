@@ -54,6 +54,20 @@ MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', 'localhost')
 MCP_SERVER_PORT = int(os.environ.get('CLAUDE_MCP_PORT', '8765'))
 MCP_SERVER_URL = f'http://{MCP_SERVER_HOST}:{MCP_SERVER_PORT}'
 
+# API token for authenticating requests to the MCP server
+_TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
+
+
+def _mcp_headers() -> dict:
+    """Return HTTP headers including the API token if the token file exists."""
+    headers = {'Content-Type': 'application/json'}
+    try:
+        if _TOKEN_FILE.exists():
+            headers['X-API-Key'] = _TOKEN_FILE.read_text().strip()
+    except Exception:
+        pass
+    return headers
+
 # Health monitoring settings
 HEALTH_CHECK_INTERVAL = 10  # seconds
 MAX_RESTART_ATTEMPTS = 10
@@ -116,7 +130,7 @@ def forward_to_mcp_server(message):
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers=_mcp_headers()
         )
 
         with urllib.request.urlopen(req, timeout=30) as response:
@@ -174,12 +188,23 @@ def kill_existing_server():
             for pid in pids:
                 try:
                     pid = int(pid.strip())
-                    logger.info(f"Killing existing process on port {MCP_SERVER_PORT}: PID {pid}")
-                    os.kill(pid, 9)  # SIGKILL
+                    logger.info(f"Sending SIGTERM to process on port {MCP_SERVER_PORT}: PID {pid}")
+                    os.kill(pid, signal.SIGTERM)
                 except (ValueError, ProcessLookupError):
                     pass
 
-            # Wait briefly for port to be released
+            # Give processes time to exit cleanly before escalating
+            time.sleep(2.0)
+
+            for pid in pids:
+                try:
+                    pid = int(pid.strip())
+                    os.kill(pid, 0)  # check if still running
+                    logger.warning(f"Process {pid} still alive after SIGTERM, sending SIGKILL")
+                    os.kill(pid, signal.SIGKILL)
+                except (ValueError, ProcessLookupError):
+                    pass  # already gone
+
             time.sleep(0.5)
             return True
 
@@ -329,7 +354,8 @@ def handle_local_command(message):
         # Save screenshot to file
         try:
             data = message.get('data', '')
-            filename = message.get('filename', f'screenshot_{int(time.time())}.png')
+            # Strip directory components to prevent path traversal
+            filename = Path(message.get('filename', f'screenshot_{int(time.time())}.png')).name
 
             # Use configurable screenshots directory (default: /tmp/claudecodebrowser/screenshots)
             # This ensures screenshots are accessible from any mount point (e.g., /mnt/backup/)
@@ -405,7 +431,7 @@ def forward_response_to_server(response):
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers=_mcp_headers()
         )
 
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -448,7 +474,7 @@ def poll_for_commands():
     while health_monitor_running:
         try:
             url = f'{MCP_SERVER_URL}/browser/poll'
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=_mcp_headers())
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))

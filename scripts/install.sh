@@ -159,7 +159,7 @@ echo '{
   "mcpServers": {
     "claudecodebrowser": {
       "command": "python3",
-      "args": ["'$INSTALL_DIR'/mcp-server/server.py"]
+      "args": ["'$INSTALL_DIR'/mcp-server/stdio_wrapper.py"]
     }
   }
 }'

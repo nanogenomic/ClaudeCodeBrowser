@@ -26,6 +26,18 @@ import urllib.error
 # Configuration
 MCP_SERVER_URL = os.environ.get('CLAUDE_BROWSER_URL', 'http://127.0.0.1:8765')
 SCREENSHOTS_DIR = Path.home() / '.claudecodebrowser' / 'screenshots'
+_TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
+
+
+def _api_headers() -> dict:
+    """Return HTTP headers including the API token if available."""
+    headers = {'Content-Type': 'application/json'}
+    try:
+        if _TOKEN_FILE.exists():
+            headers['X-API-Key'] = _TOKEN_FILE.read_text().strip()
+    except Exception:
+        pass
+    return headers
 
 
 @dataclass
@@ -66,10 +78,10 @@ class BrowserAutomationAgent:
                 req = urllib.request.Request(
                     url,
                     data=json.dumps(data).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'}
+                    headers=_api_headers()
                 )
             else:
-                req = urllib.request.Request(url)
+                req = urllib.request.Request(url, headers=_api_headers())
 
             with urllib.request.urlopen(req, timeout=30) as response:
                 return json.loads(response.read().decode('utf-8'))

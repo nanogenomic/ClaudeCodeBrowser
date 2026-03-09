@@ -15,6 +15,7 @@ import time
 import os
 import signal
 from pathlib import Path
+from typing import Optional
 
 # Configuration
 HTTP_HOST = os.environ.get('CLAUDE_BROWSER_HOST', '127.0.0.1')
@@ -23,6 +24,22 @@ HTTP_URL = f'http://{HTTP_HOST}:{HTTP_PORT}'
 
 # Server process reference
 server_process = None
+
+TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
+
+
+def _api_headers(extra: Optional[dict] = None) -> dict:
+    """Return HTTP headers including the API token if available."""
+    headers = {'Content-Type': 'application/json'}
+    try:
+        if TOKEN_FILE.exists():
+            headers['X-API-Key'] = TOKEN_FILE.read_text().strip()
+    except Exception:
+        pass
+    if extra:
+        headers.update(extra)
+    return headers
+
 
 def log(msg):
     """Log to stderr for debugging."""
@@ -74,7 +91,7 @@ def start_http_server():
 def get_tools():
     """Fetch available tools from the HTTP server."""
     try:
-        req = urllib.request.Request(f'{HTTP_URL}/mcp/tools')
+        req = urllib.request.Request(f'{HTTP_URL}/mcp/tools', headers=_api_headers())
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             return data.get('tools', [])
@@ -89,7 +106,7 @@ def call_tool(name, arguments):
         req = urllib.request.Request(
             f'{HTTP_URL}/mcp/call',
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers=_api_headers()
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode('utf-8'))
