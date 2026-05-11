@@ -63,6 +63,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger('ClaudeCodeBrowser.MCPServer')
 
+# Headless mode: CLAUDE_BROWSER_HEADLESS=1 or --headless flag
+HEADLESS_MODE = os.environ.get('CLAUDE_BROWSER_HEADLESS', '0') == '1' or '--headless' in sys.argv
+
 # API token for localhost HTTP authentication
 _TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
 
@@ -571,6 +574,71 @@ MCP_TOOLS: List[MCPTool] = [
                 "tab_id": {"type": "integer", "description": "Optional tab ID. If not specified, uses active tab."}
             }
         }
+    ),
+    MCPTool(
+        name="browser_eval_chain",
+        description=(
+            "Execute a sequence of JavaScript expressions in the page, sharing state between steps. "
+            "Each step can inspect the result of the previous one and branch conditionally. "
+            "Console output (console.log/warn/error) is captured per step. "
+            "Ideal for multi-turn inspection tasks without round-tripping per expression."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["steps"],
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "description": "Ordered list of JS expressions to evaluate. Each step receives the prior result as `$prev`.",
+                    "items": {
+                        "type": "object",
+                        "required": ["script"],
+                        "properties": {
+                            "script": {"type": "string", "description": "JavaScript expression to evaluate."},
+                            "label": {"type": "string", "description": "Human-readable label for this step."},
+                            "capture_console": {"type": "boolean", "default": True, "description": "Capture console output for this step."},
+                            "stop_on_error": {"type": "boolean", "default": True, "description": "Abort chain if this step throws."}
+                        }
+                    }
+                },
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_wait_and_act",
+        description=(
+            "Poll the page until a condition is met, then execute an action. "
+            "Use for waiting on async UI state (e.g. 'wait until #result is visible, then click it')."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["condition", "action_script"],
+            "properties": {
+                "condition": {"type": "string", "description": "JS expression that returns truthy when ready."},
+                "action_script": {"type": "string", "description": "JS to run once condition is met."},
+                "poll_interval_ms": {"type": "integer", "default": 200, "description": "How often to check condition."},
+                "timeout_ms": {"type": "integer", "default": 15000, "description": "Max wait time before giving up."},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_inject_observer",
+        description=(
+            "Inject a MutationObserver into the page that captures DOM changes and console events "
+            "into a buffer, readable via browser_get_console_logs. Useful for watching live UI updates."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "default": "body", "description": "Root element to observe."},
+                "observe_attributes": {"type": "boolean", "default": True},
+                "observe_child_list": {"type": "boolean", "default": True},
+                "observe_subtree": {"type": "boolean", "default": True},
+                "tab_id": {"type": "integer"}
+            }
+        }
     )
 ]
 
@@ -811,7 +879,11 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             'browser_stop_logging': 'stopLogging',
             'browser_get_console_logs': 'getConsoleLogs',
             'browser_get_network_logs': 'getNetworkLogs',
-            'browser_clear_logs': 'clearLogs'
+            'browser_clear_logs': 'clearLogs',
+            # Multi-turn / conditional execution
+            'browser_eval_chain': 'evalChain',
+            'browser_wait_and_act': 'waitAndAct',
+            'browser_inject_observer': 'injectObserver'
         }
 
         if tool_name not in tool_action_map:
@@ -852,6 +924,26 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 logger.error(f"WebSocket command failed: {e}")
                 # Fall through to HTTP method
+
+        # Try headless Playwright backend if enabled and available
+        if HEADLESS_MODE:
+            from headless_backend import get_headless_browser
+            headless = get_headless_browser()
+            if headless:
+                loop = asyncio.get_event_loop()
+                try:
+                    if loop.is_running():
+                        future = asyncio.run_coroutine_threadsafe(
+                            headless.execute(action, tab_id, arguments), loop
+                        )
+                        return future.result(timeout=35)
+                    else:
+                        return loop.run_until_complete(headless.execute(action, tab_id, arguments))
+                except Exception as e:
+                    logger.error(f"Headless backend failed: {e}")
+                    return {'success': False, 'error': f'Headless execution failed: {e}'}
+            else:
+                return {'success': False, 'error': 'Headless mode enabled but browser not started yet. Wait a moment and retry.'}
 
         # No WebSocket connection — use HTTP polling with the native host.
         # ThreadingHTTPServer ensures /browser/poll and /browser/response are
@@ -984,25 +1076,43 @@ async def run_websocket_server():
     await server.wait_closed()
 
 
+async def run_with_headless():
+    """Run WebSocket server alongside headless browser startup."""
+    from headless_backend import init_headless_browser
+    headless = await init_headless_browser()
+    logger.info("Headless browser ready")
+
+    if HAS_WEBSOCKETS:
+        await run_websocket_server()
+    else:
+        # No WebSocket but headless is running — just keep the event loop alive
+        await asyncio.Event().wait()
+
+    await headless.stop()
+
+
 def main():
     """Main entry point."""
+    mode_label = "HEADLESS (Playwright)" if HEADLESS_MODE else "EXTENSION (Firefox/native-host)"
     print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║           ClaudeCodeBrowser MCP Server v1.0.0                ║
-╠══════════════════════════════════════════════════════════════╣
-║  HTTP Server:      http://{HOST}:{HTTP_PORT:<5}                       ║
-║  WebSocket Server: ws://{HOST}:{WS_PORT:<5}                         ║
-║  Screenshots:      {str(SCREENSHOTS_DIR):<40} ║
-║  Logs:             {str(LOG_FILE):<40} ║
-╚══════════════════════════════════════════════════════════════╝
++--------------------------------------------------------------+
+|           ClaudeCodeBrowser MCP Server v1.0.0                |
++--------------------------------------------------------------+
+|  Mode:             {mode_label:<40} |
+|  HTTP Server:      http://{HOST}:{HTTP_PORT:<5}                       |
+|  WebSocket Server: ws://{HOST}:{WS_PORT:<5}                         |
+|  Screenshots:      {str(SCREENSHOTS_DIR):<40} |
+|  Logs:             {str(LOG_FILE):<40} |
++--------------------------------------------------------------+
     """)
 
-    # Start HTTP server in a thread
+    # Start HTTP server in a thread (always needed)
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
 
-    # Run WebSocket server in the main async loop
-    if HAS_WEBSOCKETS:
+    if HEADLESS_MODE:
+        asyncio.run(run_with_headless())
+    elif HAS_WEBSOCKETS:
         asyncio.run(run_websocket_server())
     else:
         # If no websockets, just keep the HTTP server running
