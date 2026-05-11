@@ -24,6 +24,8 @@ import asyncio
 import json
 import logging
 import os
+import secrets
+import stat
 import sys
 import base64
 import time
@@ -41,6 +43,7 @@ except ImportError:
 
 # HTTP server imports
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 import threading
 import socket
@@ -59,6 +62,26 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('ClaudeCodeBrowser.MCPServer')
+
+# API token for localhost HTTP authentication
+_TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
+
+
+def _load_or_create_api_token() -> str:
+    """Load existing API token or generate a new one on first run."""
+    if _TOKEN_FILE.exists():
+        token = _TOKEN_FILE.read_text().strip()
+        if token:
+            return token
+    token = secrets.token_hex(32)
+    _TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _TOKEN_FILE.write_text(token)
+    _TOKEN_FILE.chmod(0o600)
+    logger.info(f"Generated new API token saved to {_TOKEN_FILE}")
+    return token
+
+
+API_TOKEN = _load_or_create_api_token()
 
 # Configuration
 HOST = os.environ.get('CLAUDE_BROWSER_HOST', '127.0.0.1')
@@ -558,6 +581,7 @@ class BrowserConnectionManager:
     def __init__(self):
         self.browser_connections = {}
         self.pending_requests = {}
+        self.http_pending_requests = {}
         self.request_counter = 0
 
     def register_browser(self, browser_id: str, connection):
@@ -607,6 +631,11 @@ class BrowserConnectionManager:
             future = self.pending_requests[request_id]
             if not future.done():
                 future.set_result(response)
+        # Also signal HTTP polling waiters
+        if request_id and request_id in self.http_pending_requests:
+            event, result_holder = self.http_pending_requests[request_id]
+            result_holder['response'] = response
+            event.set()
 
 
 # Global connection manager
@@ -623,18 +652,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         """Send a JSON response."""
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # No CORS headers: all callers (stdio_wrapper, native host) are local processes
+        # using urllib — not browser fetch. Omitting CORS blocks cross-origin requests.
         self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
 
+    def _check_auth(self) -> bool:
+        """Validate the X-API-Key header against the server token."""
+        return self.headers.get('X-API-Key') == API_TOKEN
+
     def do_OPTIONS(self):
-        """Handle CORS preflight requests."""
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        """Reject CORS preflight: no cross-origin access is needed or allowed."""
+        self.send_response(403)
         self.end_headers()
 
     def do_GET(self):
@@ -642,12 +671,16 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == '/health':
+            # Health endpoint is unauthenticated so native host can probe without the token
             self.send_json_response({
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
                 'version': '1.0.0',
                 'browsers_connected': len(connection_manager.browser_connections)
             })
+
+        elif not self._check_auth():
+            self.send_json_response({'error': 'Unauthorized'}, 403)
 
         elif parsed.path == '/mcp/tools':
             # Return list of available MCP tools
@@ -688,6 +721,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
+        if not self._check_auth():
+            self.send_json_response({'error': 'Unauthorized'}, 403)
+            return
+
         parsed = urlparse(self.path)
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
@@ -731,7 +768,9 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an MCP tool by sending command to browser via native host."""
-        logger.info(f"Executing tool: {tool_name} with args: {arguments}")
+        _SENSITIVE = {'text', 'script', 'value', 'password'}
+        log_args = {k: ('***' if k in _SENSITIVE else v) for k, v in arguments.items()}
+        logger.info(f"Executing tool: {tool_name} with args: {log_args}")
 
         # Map tool names to actions
         tool_action_map = {
@@ -814,44 +853,49 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 logger.error(f"WebSocket command failed: {e}")
                 # Fall through to HTTP method
 
-        # No WebSocket connection - try HTTP polling with native host
-        # The extension polls /browser/poll and we store commands there
+        # No WebSocket connection — use HTTP polling with the native host.
+        # ThreadingHTTPServer ensures /browser/poll and /browser/response are
+        # served concurrently while this thread blocks waiting for the response.
+        request_id = str(time.time())
         command_data = {
             'action': action,
             'tabId': tab_id,
             'data': arguments,
-            'requestId': str(time.time())
+            'requestId': request_id
         }
 
-        # Store command for extension to poll
+        # Register a waiter before queuing so we never miss the response
+        event = threading.Event()
+        result_holder = {}
+        connection_manager.http_pending_requests[request_id] = (event, result_holder)
+
         self.server._pending_commands = getattr(self.server, '_pending_commands', [])
         self.server._pending_commands.append(command_data)
 
-        # For screenshot specifically, we can return info about where to save
-        if action == 'screenshot':
-            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-            filepath = SCREENSHOTS_DIR / filename
-            return {
-                'success': True,
-                'message': 'Screenshot command queued',
-                'save_path': str(filepath),
-                'screenshots_dir': str(SCREENSHOTS_DIR),
-                'action': action,
-                'note': 'Screenshot will be saved when browser extension responds'
-            }
+        logger.info(f"Queued command {action} (requestId={request_id}), waiting for browser response...")
 
-        return {
-            'success': True,
-            'message': f'Command {action} queued for browser',
-            'action': action
-        }
+        if event.wait(timeout=30.0):
+            connection_manager.http_pending_requests.pop(request_id, None)
+            response = result_holder.get('response', {})
+            if action == 'screenshot' and response.get('success') and response.get('data'):
+                return self._save_screenshot(response, arguments)
+            return response
+        else:
+            connection_manager.http_pending_requests.pop(request_id, None)
+            logger.warning(f"Command {action} timed out after 30s")
+            return {
+                'success': False,
+                'error': f'Command {action} timed out waiting for browser response after 30s',
+                'action': action
+            }
 
     def _save_screenshot(self, result: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Save screenshot data to file."""
         try:
             data = result.get('data', '')
             save_to_file = arguments.get('save_to_file', True)
-            filename = arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            # Strip directory components to prevent path traversal
+            filename = Path(arguments.get('filename') or f'screenshot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png').name
 
             if not save_to_file:
                 return result
@@ -886,9 +930,18 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             }
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTP server that handles each request in a new thread.
+
+    Required because execute_tool() blocks waiting for browser responses while
+    /browser/poll and /browser/response must be served concurrently on the same port.
+    """
+    daemon_threads = True
+
+
 def run_http_server():
     """Run the HTTP server."""
-    server = HTTPServer((HOST, HTTP_PORT), MCPHTTPHandler)
+    server = ThreadingHTTPServer((HOST, HTTP_PORT), MCPHTTPHandler)
     logger.info(f"HTTP server starting on {HOST}:{HTTP_PORT}")
     server.serve_forever()
 

@@ -50,9 +50,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', 'localhost')
+# Use 127.0.0.1 to avoid IPv6 resolution issues (localhost may resolve to ::1 first)
+MCP_SERVER_HOST = os.environ.get('CLAUDE_MCP_HOST', '127.0.0.1')
 MCP_SERVER_PORT = int(os.environ.get('CLAUDE_MCP_PORT', '8765'))
 MCP_SERVER_URL = f'http://{MCP_SERVER_HOST}:{MCP_SERVER_PORT}'
+
+# API token for authenticating requests to the MCP server
+_TOKEN_FILE = Path.home() / '.claudecodebrowser' / 'api_token'
+
+
+def _mcp_headers() -> dict:
+    """Return HTTP headers including the API token if the token file exists."""
+    headers = {'Content-Type': 'application/json'}
+    try:
+        if _TOKEN_FILE.exists():
+            headers['X-API-Key'] = _TOKEN_FILE.read_text().strip()
+    except Exception:
+        pass
+    return headers
+
 
 # Health monitoring settings
 HEALTH_CHECK_INTERVAL = 10  # seconds
@@ -116,7 +132,7 @@ def forward_to_mcp_server(message):
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers=_mcp_headers()
         )
 
         with urllib.request.urlopen(req, timeout=30) as response:
@@ -174,12 +190,22 @@ def kill_existing_server():
             for pid in pids:
                 try:
                     pid = int(pid.strip())
-                    logger.info(f"Killing existing process on port {MCP_SERVER_PORT}: PID {pid}")
-                    os.kill(pid, 9)  # SIGKILL
+                    logger.info(f"Sending SIGTERM to process on port {MCP_SERVER_PORT}: PID {pid}")
+                    os.kill(pid, signal.SIGTERM)
                 except (ValueError, ProcessLookupError):
                     pass
 
-            # Wait briefly for port to be released
+            time.sleep(2.0)
+
+            for pid in pids:
+                try:
+                    pid = int(pid.strip())
+                    os.kill(pid, 0)  # check if still alive
+                    logger.warning(f"Process {pid} still alive after SIGTERM, sending SIGKILL")
+                    os.kill(pid, signal.SIGKILL)
+                except (ValueError, ProcessLookupError):
+                    pass
+
             time.sleep(0.5)
             return True
 
@@ -329,7 +355,8 @@ def handle_local_command(message):
         # Save screenshot to file
         try:
             data = message.get('data', '')
-            filename = message.get('filename', f'screenshot_{int(time.time())}.png')
+            # Strip directory components to prevent path traversal
+            filename = Path(message.get('filename', f'screenshot_{int(time.time())}.png')).name
 
             # Use configurable screenshots directory (default: /tmp/claudecodebrowser/screenshots)
             # This ensures screenshots are accessible from any mount point (e.g., /mnt/backup/)
@@ -362,20 +389,23 @@ def process_message(message):
     """Process an incoming message from the extension."""
     logger.info(f"Processing message: {message.get('action', 'unknown')}")
 
-    # Check if this is a response to a screenshot command - save it!
-    if message.get('success') and message.get('data') and 'requestId' in message:
-        # This looks like a screenshot response - save it
-        logger.info("Received screenshot data, saving...")
-        save_result = handle_local_command({
-            'action': 'saveScreenshot',
-            'data': message.get('data'),
-            'filename': f'screenshot_{int(time.time())}.png'
-        })
-        if save_result:
-            logger.info(f"Screenshot saved: {save_result.get('filepath')}")
-            # Also forward the response to the server
-            forward_response_to_server(message)
-            return save_result
+    # If this is a response from the extension (has requestId but no action),
+    # forward it to the server so execute_tool() can wake up its waiter.
+    if 'requestId' in message and 'action' not in message:
+        logger.info(f"Forwarding response for requestId: {message.get('requestId')}")
+
+        # Save screenshot data locally if present
+        if message.get('success') and message.get('data'):
+            save_result = handle_local_command({
+                'action': 'saveScreenshot',
+                'data': message.get('data'),
+                'filename': f'screenshot_{int(time.time())}.png'
+            })
+            if save_result:
+                logger.info(f"Screenshot saved: {save_result.get('filepath')}")
+
+        forward_response_to_server(message)
+        return message
 
     # Try to handle locally first
     local_result = handle_local_command(message)
@@ -405,7 +435,7 @@ def forward_response_to_server(response):
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers=_mcp_headers()
         )
 
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -448,7 +478,7 @@ def poll_for_commands():
     while health_monitor_running:
         try:
             url = f'{MCP_SERVER_URL}/browser/poll'
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=_mcp_headers())
 
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
