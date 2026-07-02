@@ -305,19 +305,49 @@ async function takeScreenshot(tabId, options = {}) {
     }
 
     try {
+      // Full-page capture: captureTab with a rect spanning the whole
+      // document (Firefox 82+, needs <all_urls>). The content script only
+      // reports page dimensions; the capture itself must happen here.
+      if (options.fullPage) {
+        const dims = await browser.tabs.sendMessage(targetTab.id, {
+          action: "captureFullPage"
+        }, { frameId: 0 });
+        if (!dims || !dims.scrollWidth || !dims.scrollHeight) {
+          throw new Error("Full-page capture failed: could not measure page (content script unavailable on this page)");
+        }
+
+        // Firefox rejects captures beyond its canvas limits. The output
+        // bitmap is scaled by devicePixelRatio, so clamp in CSS pixels
+        // with that factored in; oversized pages get a truncated capture
+        // instead of an error.
+        const dpr = dims.devicePixelRatio || 1;
+        const maxDim = Math.floor(30000 / dpr);
+        const maxArea = Math.floor(100000000 / (dpr * dpr));
+        const width = Math.min(dims.scrollWidth, maxDim);
+        const height = Math.min(dims.scrollHeight, maxDim, Math.floor(maxArea / width));
+
+        const dataUrl = await browser.tabs.captureTab(targetTab.id, {
+          format: options.format || "png",
+          quality: options.quality || 90,
+          rect: { x: 0, y: 0, width: width, height: height }
+        });
+
+        return {
+          success: true,
+          data: dataUrl,
+          type: "fullPage",
+          pageSize: { width: dims.scrollWidth, height: dims.scrollHeight },
+          capturedSize: { width: width, height: height },
+          truncated: width < dims.scrollWidth || height < dims.scrollHeight,
+          tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+          wasFocused: needsFocus
+        };
+      }
+
       const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, {
         format: options.format || "png",
         quality: options.quality || 90
       });
-
-      // If full page screenshot requested, use content script
-      if (options.fullPage) {
-        const fullPageData = await browser.tabs.sendMessage(targetTab.id, {
-          action: "captureFullPage",
-          format: options.format || "png"
-        });
-        return { success: true, data: fullPageData, type: "fullPage" };
-      }
 
       return {
         success: true,
