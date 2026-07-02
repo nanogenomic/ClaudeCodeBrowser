@@ -710,6 +710,27 @@ class BrowserConnectionManager:
 connection_manager = BrowserConnectionManager()
 
 
+def _snake_to_camel(name: str) -> str:
+    first, *rest = name.split('_')
+    return first + ''.join(part.title() for part in rest)
+
+
+def _camelize_keys(value: Any) -> Any:
+    """Recursively convert dict keys from snake_case to camelCase.
+
+    MCP tool schemas use snake_case argument names (full_page, url_pattern,
+    double_click, ...) but the browser extension reads camelCase options
+    (options.fullPage, options.urlPattern, ...). Convert at this boundary so
+    both sides keep their native convention. The headless Playwright backend
+    expects snake_case, so its path must NOT go through this conversion.
+    """
+    if isinstance(value, dict):
+        return {_snake_to_camel(k): _camelize_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_camelize_keys(v) for v in value]
+    return value
+
+
 class MCPHTTPHandler(BaseHTTPRequestHandler):
     """HTTP request handler for MCP server."""
 
@@ -892,6 +913,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         action = tool_action_map[tool_name]
         tab_id = arguments.pop('tab_id', None)
 
+        # Extension-bound copies use camelCase keys; keep the snake_case
+        # original for _save_screenshot() and the headless backend.
+        browser_args = _camelize_keys(arguments)
+
         # Check if we have a browser connection via WebSocket
         browser = connection_manager.get_active_browser()
 
@@ -900,7 +925,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             command = BrowserCommand(
                 action=action,
                 tab_id=tab_id,
-                data=arguments
+                data=browser_args
             )
 
             # Run async command in event loop
@@ -952,7 +977,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         command_data = {
             'action': action,
             'tabId': tab_id,
-            'data': arguments,
+            'data': browser_args,
             'requestId': request_id
         }
 

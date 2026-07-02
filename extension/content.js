@@ -75,7 +75,7 @@
 
   // Network request interceptor (fetch)
   const originalFetch = window.fetch;
-  window.fetch = async function(...args) {
+  const loggingFetch = async function(...args) {
     const startTime = Date.now();
     const [resource, init] = args;
     const url = typeof resource === 'string' ? resource : resource.url;
@@ -137,11 +137,22 @@
     }
   };
 
+  // Firefox exposes window.fetch to content scripts as a read-only Xray
+  // property, so this assignment throws in strict mode. A failed patch must
+  // only disable fetch logging, never abort script initialization — an
+  // abort here would skip the message listener registration below and
+  // break every content-script command.
+  try {
+    window.fetch = loggingFetch;
+  } catch (e) {
+    // fetch logging unavailable on this page
+  }
+
   // XHR interceptor
   const originalXHROpen = XMLHttpRequest.prototype.open;
   const originalXHRSend = XMLHttpRequest.prototype.send;
 
-  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+  const loggingXHROpen = function(method, url, ...rest) {
     this._logData = {
       type: 'xhr',
       method: method,
@@ -151,7 +162,7 @@
     return originalXHROpen.apply(this, [method, url, ...rest]);
   };
 
-  XMLHttpRequest.prototype.send = function(body) {
+  const loggingXHRSend = function(body) {
     if (loggingEnabled && this._logData) {
       const startTime = Date.now();
       this._logData.startTime = new Date().toISOString();
@@ -180,8 +191,20 @@
     return originalXHRSend.apply(this, [body]);
   };
 
+  // Same Xray read-only caveat as window.fetch above.
+  try {
+    XMLHttpRequest.prototype.open = loggingXHROpen;
+    XMLHttpRequest.prototype.send = loggingXHRSend;
+  } catch (e) {
+    // XHR logging unavailable on this page
+  }
+
   // Initialize console interception (always intercepts, but only logs when enabled)
-  interceptConsole();
+  try {
+    interceptConsole();
+  } catch (e) {
+    // console logging unavailable on this page
+  }
 
   // Logging control functions
   function startLogging(options = {}) {
@@ -1189,15 +1212,18 @@
     };
   }
 
-  // Capture full page
+  // Report document dimensions for full-page capture. The capture itself
+  // happens in the background script via tabs.captureTab — content scripts
+  // cannot capture pixels, only measure the page.
   async function captureFullPage(options) {
-    // This needs to be handled by background script
-    // Content script can only prepare the page
+    const doc = document.documentElement;
+    const body = document.body;
     return {
-      scrollHeight: document.documentElement.scrollHeight,
-      scrollWidth: document.documentElement.scrollWidth,
+      scrollHeight: Math.max(doc.scrollHeight, body ? body.scrollHeight : 0),
+      scrollWidth: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0),
       viewportHeight: window.innerHeight,
-      viewportWidth: window.innerWidth
+      viewportWidth: window.innerWidth,
+      devicePixelRatio: window.devicePixelRatio || 1
     };
   }
 
