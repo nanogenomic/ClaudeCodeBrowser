@@ -74,8 +74,10 @@
   }
 
   // Network request interceptor (fetch)
+  let networkInterceptionAvailable = true;
+  let consoleInterceptionAvailable = true;
   const originalFetch = window.fetch;
-  window.fetch = async function(...args) {
+  const fetchInterceptor = async function(...args) {
     const startTime = Date.now();
     const [resource, init] = args;
     const url = typeof resource === 'string' ? resource : resource.url;
@@ -137,11 +139,21 @@
     }
   };
 
+  // Firefox's content-script sandbox makes window.fetch read-only, so this assignment
+  // throws a TypeError there. Unguarded it aborted the whole script before the
+  // runtime.onMessage listener below ever registered, which silently disabled every
+  // DOM tool (click, type, getPageInfo) with a misleading "receiving end does not exist".
+  try {
+    window.fetch = fetchInterceptor;
+  } catch (error) {
+    networkInterceptionAvailable = false;
+  }
+
   // XHR interceptor
   const originalXHROpen = XMLHttpRequest.prototype.open;
   const originalXHRSend = XMLHttpRequest.prototype.send;
 
-  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+  const xhrOpenInterceptor = function(method, url, ...rest) {
     this._logData = {
       type: 'xhr',
       method: method,
@@ -151,7 +163,7 @@
     return originalXHROpen.apply(this, [method, url, ...rest]);
   };
 
-  XMLHttpRequest.prototype.send = function(body) {
+  const xhrSendInterceptor = function(body) {
     if (loggingEnabled && this._logData) {
       const startTime = Date.now();
       this._logData.startTime = new Date().toISOString();
@@ -180,8 +192,19 @@
     return originalXHRSend.apply(this, [body]);
   };
 
+  try {
+    XMLHttpRequest.prototype.open = xhrOpenInterceptor;
+    XMLHttpRequest.prototype.send = xhrSendInterceptor;
+  } catch (error) {
+    networkInterceptionAvailable = false;
+  }
+
   // Initialize console interception (always intercepts, but only logs when enabled)
-  interceptConsole();
+  try {
+    interceptConsole();
+  } catch (error) {
+    consoleInterceptionAvailable = false;
+  }
 
   // Logging control functions
   function startLogging(options = {}) {
@@ -233,7 +256,10 @@
       logs: logs,
       totalCount: consoleLogs.length,
       returnedCount: logs.length,
-      loggingEnabled: loggingEnabled
+      loggingEnabled: loggingEnabled,
+      // Without this the caller cannot tell "the page logged nothing" from
+      // "interception never installed, so nothing was ever captured".
+      interceptionAvailable: consoleInterceptionAvailable
     };
   }
 
@@ -272,7 +298,10 @@
       logs: logs,
       totalCount: networkLogs.length,
       returnedCount: logs.length,
-      loggingEnabled: loggingEnabled
+      loggingEnabled: loggingEnabled,
+      // Firefox refuses the window.fetch override, so an empty list here is
+      // routinely "not captured" rather than "no requests were made".
+      interceptionAvailable: networkInterceptionAvailable
     };
   }
 
