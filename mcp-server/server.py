@@ -1038,8 +1038,28 @@ def run_http_server():
     server.serve_forever()
 
 
-async def websocket_handler(websocket, path):
-    """Handle WebSocket connections from browser extensions."""
+async def websocket_handler(websocket, path=None):
+    """Handle WebSocket connections from browser extensions.
+
+    The first frame must be {"token": "<API_TOKEN>"}. Without this, any local
+    process could connect, register itself as the browser, and either hijack
+    automation commands (arbitrary JS execution) or forge responses such as
+    fake screenshots. The HTTP side already requires the same token via
+    X-API-Key; this brings the WebSocket channel up to parity.
+    """
+    try:
+        handshake = await asyncio.wait_for(websocket.recv(), timeout=10)
+        presented = json.loads(handshake).get('token', '')
+    except (asyncio.TimeoutError, json.JSONDecodeError, AttributeError):
+        logger.warning("WebSocket rejected: malformed or missing auth handshake")
+        await websocket.close(code=1008, reason="auth required")
+        return
+
+    if not secrets.compare_digest(presented, API_TOKEN):
+        logger.warning("WebSocket rejected: invalid token")
+        await websocket.close(code=1008, reason="invalid token")
+        return
+
     browser_id = f"browser_{id(websocket)}"
     connection_manager.register_browser(browser_id, websocket)
 

@@ -855,11 +855,17 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// Listen for external connections (from MCP server via HTTP)
+// External messages are refused. The MCP server reaches this extension via HTTP
+// polling and native messaging, never runtime.sendMessage, so nothing legitimate
+// arrives here. In Firefox only other installed extensions can reach this listener,
+// so forwarding to handleCommand would hand any co-installed extension arbitrary
+// JS execution on every tab, bypassing the native host's API token entirely.
 browser.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
-  handleCommand(message)
-    .then(sendResponse);
-  return true;
+  console.warn(
+    `[ClaudeCodeBrowser] refused external message from ${sender?.id ?? "unknown sender"}`
+  );
+  sendResponse({ success: false, error: "external messages are not accepted" });
+  return false;
 });
 
 // Context menu for quick actions
