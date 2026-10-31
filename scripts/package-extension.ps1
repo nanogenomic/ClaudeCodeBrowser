@@ -65,8 +65,21 @@ if ($Sign) {
 } else {
     if (Test-Path $Xpi) { Remove-Item $Xpi }
     # Zip the extension contents with manifest.json at the archive root.
-    Compress-Archive -Path (Join-Path $Src "*") -DestinationPath "$Xpi.zip" -Force
-    Move-Item "$Xpi.zip" $Xpi -Force
+    # Not Compress-Archive: on Windows PowerShell 5.1 it stores entry names
+    # with backslashes (popup\popup.html), which Firefox can't resolve.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $srcFull = (Resolve-Path $Src).Path.TrimEnd('\') + '\'
+    $zip = [System.IO.Compression.ZipFile]::Open($Xpi, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        Get-ChildItem $Src -Recurse -File | ForEach-Object {
+            $entry = $_.FullName.Substring($srcFull.Length).Replace('\', '/')
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $zip, $_.FullName, $entry, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    } finally {
+        $zip.Dispose()
+    }
     Write-Host "Unsigned package: $Xpi"
     Write-Host ""
     Write-Host "To load it: Firefox -> about:debugging -> This Firefox ->"
