@@ -20,6 +20,12 @@ docs are versioned together.
   now accepts both.
 - **Windows `.xpi` packaging** wrote backslash entry names
   (`popup\popup.html`), so Firefox couldn't find the popup or icons.
+- **Content-script tools answered from iframes.** The content script runs in
+  every frame, and untargeted `tabs.sendMessage` reached all of them; the
+  first frame to reply won, often a third-party iframe (e.g. Stripe on the
+  Cloudflare dashboard). `get_text`, `click`, `type`, `get_elements`,
+  approval banners etc. now always address the top-level frame
+  (`frameId: 0`); the "Inspect" context menu targets the clicked frame.
 
 ## [1.4.0]
 

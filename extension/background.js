@@ -345,7 +345,7 @@ async function takeScreenshot(tabId, options = {}) {
       // (Firefox 82+). Without captureTab (e.g. the Chromium build) fall
       // back to the visible viewport rather than returning no image.
       if (options.fullPage) {
-        const dims = await browser.tabs.sendMessage(targetTab.id, {
+        const dims = await sendToTopFrame(targetTab.id, {
           action: "captureFullPage",
           format
         });
@@ -520,10 +520,18 @@ async function navigateHistory(tabId, direction) {
 }
 
 // Generic helper to send message to content script
+// The content script runs in every frame (all_frames), so an untargeted
+// tabs.sendMessage reaches all of them and the first frame to answer wins --
+// often a third-party iframe (Stripe, ads, captcha widgets) instead of the
+// page itself. Address the top-level document explicitly.
+function sendToTopFrame(tabId, message) {
+  return browser.tabs.sendMessage(tabId, message, { frameId: 0 });
+}
+
 async function sendToContentScript(tabId, message) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-    const result = await browser.tabs.sendMessage(tab.id, message);
+    const result = await sendToTopFrame(tab.id, message);
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
@@ -535,7 +543,7 @@ async function performClick(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "click",
       ...data
     });
@@ -551,7 +559,7 @@ async function performType(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "type",
       ...data
     });
@@ -567,7 +575,7 @@ async function performScroll(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "scroll",
       ...data
     });
@@ -611,7 +619,7 @@ async function getPageInfo(tabId) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "getPageInfo"
     });
 
@@ -630,7 +638,7 @@ async function getElements(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "getElements",
       ...data
     });
@@ -661,7 +669,7 @@ async function highlightElement(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "highlight",
       ...data
     });
@@ -677,7 +685,7 @@ async function waitForElement(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "waitForElement",
       ...data
     });
@@ -765,7 +773,7 @@ async function getTabInfo(tabId) {
     // Try to get page info from content script
     let pageInfo = null;
     try {
-      pageInfo = await browser.tabs.sendMessage(tabId, { action: "getPageInfo" });
+      pageInfo = await sendToTopFrame(tabId, { action: "getPageInfo" });
     } catch (e) {
       // Content script may not be loaded
       pageInfo = { error: "Content script not available" };
@@ -1040,7 +1048,7 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
       action: "inspectElement",
       x: info.pageX,
       y: info.pageY
-    });
+    }, { frameId: info.frameId || 0 });
   }
 });
 
