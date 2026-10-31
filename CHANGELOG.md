@@ -14,6 +14,12 @@ docs are versioned together.
   (capped at 16384 px per side, flagged `truncated`); browsers without
   `captureTab` fall back to the visible area. The server also reports a
   clear error instead of crashing when a screenshot carries no image data.
+- **`browser_get_tabs` ignored `url_pattern`, `current_window_only` and
+  `include_favicon`.** The server camelizes argument keys (`urlPattern`) but
+  the extension read snake_case, so the filter never applied. The extension
+  now accepts both.
+- **Windows `.xpi` packaging** wrote backslash entry names
+  (`popup\popup.html`), so Firefox couldn't find the popup or icons.
 
 ## [1.4.0]
 
