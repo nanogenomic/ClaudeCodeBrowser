@@ -337,19 +337,52 @@ async function takeScreenshot(tabId, options = {}) {
     }
 
     try {
-      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, {
-        format: options.format || "png",
-        quality: options.quality || 90
-      });
+      const format = options.format || "png";
+      const quality = options.quality || 90;
 
-      // If full page screenshot requested, use content script
+      // Full page: the content script reports the page dimensions, then
+      // Firefox's tabs.captureTab renders the whole document via `rect`
+      // (Firefox 82+). Without captureTab (e.g. the Chromium build) fall
+      // back to the visible viewport rather than returning no image.
       if (options.fullPage) {
-        const fullPageData = await browser.tabs.sendMessage(targetTab.id, {
+        const dims = await sendToTopFrame(targetTab.id, {
           action: "captureFullPage",
-          format: options.format || "png"
+          format
         });
-        return { success: true, data: fullPageData, type: "fullPage" };
+        if (typeof browser.tabs.captureTab === "function") {
+          // Keep within canvas size limits; very tall pages get cut off
+          const MAX_DIM = 16384;
+          const width = Math.min(dims.scrollWidth || dims.viewportWidth, MAX_DIM);
+          const height = Math.min(dims.scrollHeight || dims.viewportHeight, MAX_DIM);
+          const dataUrl = await browser.tabs.captureTab(targetTab.id, {
+            format,
+            quality,
+            rect: { x: 0, y: 0, width, height },
+            scale: 1
+          });
+          return {
+            success: true,
+            data: dataUrl,
+            type: "fullPage",
+            dimensions: dims,
+            truncated: height < dims.scrollHeight || width < dims.scrollWidth,
+            tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+            wasFocused: needsFocus
+          };
+        }
+        const visible = await browser.tabs.captureVisibleTab(targetTab.windowId, { format, quality });
+        return {
+          success: true,
+          data: visible,
+          type: "visible",
+          dimensions: dims,
+          note: "Full-page capture unsupported in this browser; returned visible area only",
+          tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+          wasFocused: needsFocus
+        };
       }
+
+      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, { format, quality });
 
       return {
         success: true,
@@ -487,10 +520,18 @@ async function navigateHistory(tabId, direction) {
 }
 
 // Generic helper to send message to content script
+// The content script runs in every frame (all_frames), so an untargeted
+// tabs.sendMessage reaches all of them and the first frame to answer wins --
+// often a third-party iframe (Stripe, ads, captcha widgets) instead of the
+// page itself. Address the top-level document explicitly.
+function sendToTopFrame(tabId, message) {
+  return browser.tabs.sendMessage(tabId, message, { frameId: 0 });
+}
+
 async function sendToContentScript(tabId, message) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-    const result = await browser.tabs.sendMessage(tab.id, message);
+    const result = await sendToTopFrame(tab.id, message);
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
@@ -502,7 +543,7 @@ async function performClick(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "click",
       ...data
     });
@@ -518,7 +559,7 @@ async function performType(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "type",
       ...data
     });
@@ -534,7 +575,7 @@ async function performScroll(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "scroll",
       ...data
     });
@@ -578,7 +619,7 @@ async function getPageInfo(tabId) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "getPageInfo"
     });
 
@@ -597,7 +638,7 @@ async function getElements(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "getElements",
       ...data
     });
@@ -628,7 +669,7 @@ async function highlightElement(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "highlight",
       ...data
     });
@@ -644,7 +685,7 @@ async function waitForElement(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await sendToTopFrame(tab.id, {
       action: "waitForElement",
       ...data
     });
@@ -662,9 +703,13 @@ async function getAllTabs(options = {}) {
     // window/tab in the user's browser. With dozens of tabs open, querying
     // {} and returning full metadata per tab blows past response size
     // limits. Opt into the wider view explicitly when needed.
-    const currentWindowOnly = options.current_window_only !== false;
-    const includeFavicon = options.include_favicon === true;
-    const urlPattern = options.url_pattern ? new RegExp(options.url_pattern) : null;
+    // The server camelizes argument keys (url_pattern -> urlPattern); accept
+    // snake_case too for direct callers.
+    const pick = (camel, snake) => options[camel] !== undefined ? options[camel] : options[snake];
+    const currentWindowOnly = pick("currentWindowOnly", "current_window_only") !== false;
+    const includeFavicon = pick("includeFavicon", "include_favicon") === true;
+    const urlPatternSrc = pick("urlPattern", "url_pattern");
+    const urlPattern = urlPatternSrc ? new RegExp(urlPatternSrc) : null;
     const limit = Number.isInteger(options.limit) ? options.limit : 50;
 
     const queryOpts = currentWindowOnly ? { currentWindow: true } : {};
@@ -728,7 +773,7 @@ async function getTabInfo(tabId) {
     // Try to get page info from content script
     let pageInfo = null;
     try {
-      pageInfo = await browser.tabs.sendMessage(tabId, { action: "getPageInfo" });
+      pageInfo = await sendToTopFrame(tabId, { action: "getPageInfo" });
     } catch (e) {
       // Content script may not be loaded
       pageInfo = { error: "Content script not available" };
@@ -1003,7 +1048,7 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
       action: "inspectElement",
       x: info.pageX,
       y: info.pageY
-    });
+    }, { frameId: info.frameId || 0 });
   }
 });
 

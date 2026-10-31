@@ -4,6 +4,29 @@ All notable changes to ClaudeCodeBrowser are documented here. Versions follow
 [semantic versioning](https://semver.org/). The MCP server, extension, and
 docs are versioned together.
 
+## [1.4.1]
+
+### Fixed
+- **`browser_screenshot` with `full_page: true`** returned the page
+  dimensions instead of an image, so saving failed with
+  `'dict' object has no attribute 'startswith'`. Full-page capture now uses
+  Firefox's `tabs.captureTab` with a `rect` covering the whole document
+  (capped at 16384 px per side, flagged `truncated`); browsers without
+  `captureTab` fall back to the visible area. The server also reports a
+  clear error instead of crashing when a screenshot carries no image data.
+- **`browser_get_tabs` ignored `url_pattern`, `current_window_only` and
+  `include_favicon`.** The server camelizes argument keys (`urlPattern`) but
+  the extension read snake_case, so the filter never applied. The extension
+  now accepts both.
+- **Windows `.xpi` packaging** wrote backslash entry names
+  (`popup\popup.html`), so Firefox couldn't find the popup or icons.
+- **Content-script tools answered from iframes.** The content script runs in
+  every frame, and untargeted `tabs.sendMessage` reached all of them; the
+  first frame to reply won, often a third-party iframe (e.g. Stripe on the
+  Cloudflare dashboard). `get_text`, `click`, `type`, `get_elements`,
+  approval banners etc. now always address the top-level frame
+  (`frameId: 0`); the "Inspect" context menu targets the clicked frame.
+
 ## [1.4.0]
 
 ### Added

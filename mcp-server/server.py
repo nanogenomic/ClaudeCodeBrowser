@@ -915,7 +915,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.send_json_response({
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
-                'version': '1.4.0',
+                'version': '1.4.1',
                 'browsers_connected': len(connection_manager.browser_connections)
             })
 
@@ -1430,6 +1430,14 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             if not save_to_file:
                 return result
 
+            if not isinstance(data, str) or not data:
+                return {
+                    'success': False,
+                    'error': 'Screenshot returned no image data (the browser extension '
+                             'may be outdated; update it to the latest release)',
+                    'original_result': result
+                }
+
             # Handle base64 data URL
             if data.startswith('data:image'):
                 header, encoded = data.split(',', 1)
@@ -1564,7 +1572,7 @@ def main():
     mode_label = "HEADLESS (Playwright)" if HEADLESS_MODE else "EXTENSION (Firefox/native-host)"
     print(f"""
 +--------------------------------------------------------------+
-|           ClaudeCodeBrowser MCP Server v1.4.0                |
+|           ClaudeCodeBrowser MCP Server v1.4.1                |
 +--------------------------------------------------------------+
 |  Mode:             {mode_label:<40} |
 |  HTTP Server:      http://{HOST}:{HTTP_PORT:<5}                       |
