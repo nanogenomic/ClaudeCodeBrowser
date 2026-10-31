@@ -337,19 +337,52 @@ async function takeScreenshot(tabId, options = {}) {
     }
 
     try {
-      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, {
-        format: options.format || "png",
-        quality: options.quality || 90
-      });
+      const format = options.format || "png";
+      const quality = options.quality || 90;
 
-      // If full page screenshot requested, use content script
+      // Full page: the content script reports the page dimensions, then
+      // Firefox's tabs.captureTab renders the whole document via `rect`
+      // (Firefox 82+). Without captureTab (e.g. the Chromium build) fall
+      // back to the visible viewport rather than returning no image.
       if (options.fullPage) {
-        const fullPageData = await browser.tabs.sendMessage(targetTab.id, {
+        const dims = await browser.tabs.sendMessage(targetTab.id, {
           action: "captureFullPage",
-          format: options.format || "png"
+          format
         });
-        return { success: true, data: fullPageData, type: "fullPage" };
+        if (typeof browser.tabs.captureTab === "function") {
+          // Keep within canvas size limits; very tall pages get cut off
+          const MAX_DIM = 16384;
+          const width = Math.min(dims.scrollWidth || dims.viewportWidth, MAX_DIM);
+          const height = Math.min(dims.scrollHeight || dims.viewportHeight, MAX_DIM);
+          const dataUrl = await browser.tabs.captureTab(targetTab.id, {
+            format,
+            quality,
+            rect: { x: 0, y: 0, width, height },
+            scale: 1
+          });
+          return {
+            success: true,
+            data: dataUrl,
+            type: "fullPage",
+            dimensions: dims,
+            truncated: height < dims.scrollHeight || width < dims.scrollWidth,
+            tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+            wasFocused: needsFocus
+          };
+        }
+        const visible = await browser.tabs.captureVisibleTab(targetTab.windowId, { format, quality });
+        return {
+          success: true,
+          data: visible,
+          type: "visible",
+          dimensions: dims,
+          note: "Full-page capture unsupported in this browser; returned visible area only",
+          tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+          wasFocused: needsFocus
+        };
       }
+
+      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, { format, quality });
 
       return {
         success: true,

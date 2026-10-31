@@ -4,6 +4,17 @@ All notable changes to ClaudeCodeBrowser are documented here. Versions follow
 [semantic versioning](https://semver.org/). The MCP server, extension, and
 docs are versioned together.
 
+## [1.4.1]
+
+### Fixed
+- **`browser_screenshot` with `full_page: true`** returned the page
+  dimensions instead of an image, so saving failed with
+  `'dict' object has no attribute 'startswith'`. Full-page capture now uses
+  Firefox's `tabs.captureTab` with a `rect` covering the whole document
+  (capped at 16384 px per side, flagged `truncated`); browsers without
+  `captureTab` fall back to the visible area. The server also reports a
+  clear error instead of crashing when a screenshot carries no image data.
+
 ## [1.4.0]
 
 ### Added
