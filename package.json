@@ -1,0 +1,11 @@
+{
+  "name": "claudecodebrowser-tests",
+  "private": true,
+  "description": "Test harness only; the extension itself has no npm dependencies.",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\""
+  },
+  "devDependencies": {
+    "jsdom": "24.1.3"
+  }
+}
