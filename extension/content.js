@@ -704,12 +704,10 @@
       element.dispatchEvent(mouseDown);
       await sleep(50);
       element.dispatchEvent(mouseUp);
+      // A dispatched click also runs the default action (toggle a checkbox,
+      // open <details>, follow a link), so no extra element.click() here:
+      // that fired every click twice and flipped toggles straight back.
       element.dispatchEvent(click);
-
-      // Also try native click for form elements
-      if (element.click) {
-        element.click();
-      }
     }
 
     return {
