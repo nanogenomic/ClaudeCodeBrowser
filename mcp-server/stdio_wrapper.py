@@ -68,6 +68,7 @@ def start_http_server():
     log(f"Starting HTTP server: {server_script}")
     server_process = subprocess.Popen(
         [sys.executable, str(server_script)],
+        stdin=subprocess.DEVNULL,  # not our stdin, the MCP pipe (see issue #26)
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True
@@ -196,6 +197,10 @@ def handle_tools_call(msg):
     }
 
 def main():
+    # MCP messages are UTF-8, but Python decodes pipes with the locale's code
+    # page (cp1252 on Windows), which garbles any non-ASCII argument.
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
     log("Starting MCP stdio wrapper")
 
     # Start HTTP server
