@@ -913,7 +913,7 @@
             name: el.name || null,
             text: el.textContent?.trim().substring(0, 100) || null,
             href: el.href || null,
-            value: el.value?.substring(0, 100) || null,
+            value: typeof el.value === 'string' ? (el.value.substring(0, 100) || null) : (el.value ?? null),
             placeholder: el.placeholder || null,
             ariaLabel: el.getAttribute('aria-label'),
             position: {
@@ -1692,7 +1692,7 @@
       name: element.name || null,
       type: element.type || null,
       text: element.textContent?.trim().substring(0, 200) || null,
-      value: element.value?.substring(0, 200) || null,
+      value: typeof element.value === 'string' ? (element.value.substring(0, 200) || null) : (element.value ?? null),
       href: element.href || null,
       src: element.src || null,
       placeholder: element.placeholder || null,
