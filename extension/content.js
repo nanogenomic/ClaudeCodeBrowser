@@ -605,6 +605,49 @@
   }
 
   // Find element by various selectors
+  const NON_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  const normalizeText = (text) => (text || '').replace(/\s+/g, ' ').trim();
+
+  // Match complete labels, excluding non-text and hidden descendants before
+  // choosing the deepest candidate. Exact matches beat partial matches.
+  function findByText(text) {
+    const target = normalizeText(text);
+    if (!target || !document.body) return null;
+    let best = null;
+    let bestRank = Infinity;
+
+    function scan(element) {
+      if (NON_TEXT_TAGS.has(element.tagName)) return { text: '', matched: false };
+      const style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.opacity === '0') return { text: '', matched: false };
+      const visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
+      let label = '';
+      let childMatched = false;
+      for (const node of element.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE && visible) {
+          label += node.nodeValue;
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const child = scan(node);
+          label += child.text;
+          childMatched = childMatched || child.matched;
+        }
+      }
+      const normalized = normalizeText(label);
+      const matched = visible && normalized.includes(target);
+      if (element !== document.body && matched && !childMatched) {
+        const rank = normalized === target ? 0 : 1;
+        if (rank < bestRank) {
+          best = element;
+          bestRank = rank;
+        }
+      }
+      return { text: label, matched: matched || childMatched };
+    }
+
+    scan(document.body);
+    return best;
+  }
+
   function findElement(options) {
     let element = null;
 
@@ -620,10 +663,7 @@
       );
       element = result.singleNodeValue;
     } else if (options.text) {
-      // Find by text content
-      const xpath = `//*[contains(text(), "${options.text}")]`;
-      const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      element = result.singleNodeValue;
+      element = findByText(options.text);
     } else if (options.x !== undefined && options.y !== undefined) {
       element = document.elementFromPoint(options.x, options.y);
     } else if (options.id) {
