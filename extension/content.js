@@ -605,6 +605,28 @@
   }
 
   // Find element by various selectors
+  const NON_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  const normalizeText = (text) => (text || '').replace(/\s+/g, ' ').trim();
+
+  // The deepest element whose whole text (across child elements, whitespace
+  // collapsed) contains `text`. Exact matches beat partial ones, visible beats hidden.
+  function findByText(text) {
+    const target = normalizeText(text);
+    if (!target || !document.body || !normalizeText(document.body.textContent).includes(target)) {
+      return null;
+    }
+    const matches = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (el) => (NON_TEXT_TAGS.has(el.tagName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+    });
+    for (let el = walker.nextNode(); el; el = walker.nextNode()) {
+      if (normalizeText(el.textContent).includes(target)) matches.push(el);
+    }
+    const deepest = matches.filter(el => !matches.some(other => other !== el && el.contains(other)));
+    const rank = (el) => (normalizeText(el.textContent) === target ? 0 : 2) + (isVisible(el) ? 0 : 1);
+    return deepest.sort((a, b) => rank(a) - rank(b))[0] || null;
+  }
+
   function findElement(options) {
     let element = null;
 
@@ -620,10 +642,7 @@
       );
       element = result.singleNodeValue;
     } else if (options.text) {
-      // Find by text content
-      const xpath = `//*[contains(text(), "${options.text}")]`;
-      const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      element = result.singleNodeValue;
+      element = findByText(options.text);
     } else if (options.x !== undefined && options.y !== undefined) {
       element = document.elementFromPoint(options.x, options.y);
     } else if (options.id) {
