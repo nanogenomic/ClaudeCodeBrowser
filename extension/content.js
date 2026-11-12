@@ -720,6 +720,8 @@
   }
 
   // Type functionality
+  const MAX_TYPING_MS = 10000;
+
   async function performType(options) {
     let element = findElement(options);
 
@@ -734,8 +736,14 @@
 
     assertNotPasswordField(element, options);
 
-    // Focus the element
+    // Focus the element. In a background window focus() moves the focus but the
+    // browser fires no focus events, and React/MUI inputs that track focus then
+    // throw away what is typed, so send them ourselves (issue #8).
     element.focus();
+    if (!document.hasFocus()) {
+      element.dispatchEvent(new FocusEvent('focus'));
+      element.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    }
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await sleep(100);
 
@@ -761,7 +769,11 @@
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      // Simulate typing character by character
+      // Cap waiting by elapsed time: browsers can clamp each timer above its
+      // requested delay. Finish remaining characters without pauses after the
+      // budget expires, or whenever the tab is hidden (issue #8).
+      const deadline = performance.now() + MAX_TYPING_MS;
+      const delay = Math.min(options.delay ?? 50, MAX_TYPING_MS / Math.max(text.length, 1));
       for (const char of text) {
         const keyDown = new KeyboardEvent('keydown', {
           key: char,
@@ -792,7 +804,10 @@
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(keyUp);
 
-        await sleep(options.delay || 50);
+        const remaining = deadline - performance.now();
+        if (!document.hidden && delay > 0 && remaining > 0) {
+          await sleep(Math.min(delay, remaining));
+        }
       }
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }
