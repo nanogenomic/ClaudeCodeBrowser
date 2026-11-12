@@ -788,7 +788,7 @@ MCP_TOOLS: List[MCPTool] = [
     # Safety
     MCPTool(
         name="browser_safety_status",
-        description="Show the active safety guard policy: read-only mode, script toggle, protected/blocked/allowed URL patterns, rate-limit state, and audit log location. Configured in ~/.claudecodebrowser/safety.json.",
+        description="Show the active safety guard policy: read-only mode, script toggle, protected/blocked/allowed URL patterns, rate-limit state, audit log location, and the server and connected Firefox add-on versions. Configured in ~/.claudecodebrowser/safety.json.",
         input_schema={
             "type": "object",
             "properties": {}
@@ -813,6 +813,16 @@ MCP_TOOLS: List[MCPTool] = [
     )
 ]
 
+SERVER_VERSION = '1.4.0'
+
+
+# How long a tool call waits for the browser to answer. Prompts that wait on a
+# human (approval, captcha solving) get more time.
+DEFAULT_BROWSER_WAIT = 30.0
+HUMAN_PROMPT_WAITS = {'requestApproval': 90.0, 'solveCaptcha': 200.0}
+# The native host polls /browser/poll every 0.5 s while Firefox is connected.
+POLL_STALE_SECONDS = 5.0
+
 
 class BrowserConnectionManager:
     """Manages connections to browser extensions."""
@@ -822,6 +832,39 @@ class BrowserConnectionManager:
         self.pending_requests = {}
         self.http_pending_requests = {}
         self.request_counter = 0
+        self.extension_version: Optional[str] = None  # last version the add-on reported
+        self.last_poll: Optional[float] = None  # time.monotonic() of the last native-host poll
+
+    def version_info(self) -> Dict[str, Any]:
+        return {'server_version': SERVER_VERSION, 'extension_version': self.extension_version}
+
+    def _note_extension_version(self, response: Dict[str, Any]) -> None:
+        """Record the add-on version a response carries (and keep it out of tool
+        results); explain 'Unknown action' errors, which mean the add-on is older
+        than this server."""
+        version = response.pop('extensionVersion', None)
+        if version:
+            self.extension_version = version
+        error = response.get('error')
+        if isinstance(error, str) and error.startswith('Unknown action'):
+            addon = f'add-on is {version}' if version else 'add-on is too old to report its version'
+            response['error'] = (f'{error}. The connected Firefox {addon} and does not support this tool '
+                                 f'(server {SERVER_VERSION}): update the Firefox add-on.')
+
+    def note_poll(self) -> None:
+        self.last_poll = time.monotonic()
+
+    def seconds_since_poll(self) -> Optional[float]:
+        return None if self.last_poll is None else time.monotonic() - self.last_poll
+
+    def browser_connected(self) -> bool:
+        age = self.seconds_since_poll()
+        return bool(self.browser_connections) or (age is not None and age < POLL_STALE_SECONDS)
+
+    def connection_info(self) -> Dict[str, Any]:
+        age = self.seconds_since_poll()
+        return {'browser_connected': self.browser_connected(),
+                'seconds_since_browser_poll': None if age is None else round(age, 1)}
 
     def register_browser(self, browser_id: str, connection):
         """Register a new browser connection."""
@@ -866,6 +909,7 @@ class BrowserConnectionManager:
 
     def handle_response(self, response: Dict[str, Any]):
         """Handle a response from the browser."""
+        self._note_extension_version(response)
         request_id = response.get('requestId')
         if request_id and request_id in self.pending_requests:
             future = self.pending_requests[request_id]
@@ -915,8 +959,10 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.send_json_response({
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
-                'version': '1.4.0',
-                'browsers_connected': len(connection_manager.browser_connections)
+                'version': SERVER_VERSION,
+                'extension_version': connection_manager.extension_version,
+                'browsers_connected': len(connection_manager.browser_connections),
+                **connection_manager.connection_info()
             })
 
         elif not self._check_auth():
@@ -948,6 +994,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == '/browser/poll':
             # Extension/native host polls for pending commands
+            connection_manager.note_poll()
             pending = getattr(self.server, '_pending_commands', [])
             if pending:
                 # Return and clear the first pending command
@@ -1043,7 +1090,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # Handled entirely server-side, no browser round-trip needed.
         if tool_name == 'browser_safety_status':
-            return guard.status()
+            return {**guard.status(), **connection_manager.version_info(),
+                    **connection_manager.connection_info()}
         if tool_name == 'browser_run_workflow':
             return self._run_workflow(arguments)
         if tool_name == 'browser_audit_page':
@@ -1128,12 +1176,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # Prompts that wait on a human (approval, captcha solving) can take far
         # longer than a normal command, so give the transport matching headroom.
-        if action == 'requestApproval':
-            wait_timeout = 90.0
-        elif action == 'solveCaptcha':
-            wait_timeout = 200.0
-        else:
-            wait_timeout = 30.0
+        wait_timeout = HUMAN_PROMPT_WAITS.get(action, DEFAULT_BROWSER_WAIT)
 
         # Check if we have a browser connection via WebSocket
         browser = connection_manager.get_active_browser()
@@ -1210,6 +1253,19 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
         # No WebSocket connection — use HTTP polling with the native host.
         # ThreadingHTTPServer ensures /browser/poll and /browser/response are
         # served concurrently while this thread blocks waiting for the response.
+        if connection_manager.last_poll is None:
+            # Server just started: give the native host a moment to make its first poll.
+            deadline = time.monotonic() + POLL_STALE_SECONDS
+            while not connection_manager.browser_connected() and time.monotonic() < deadline:
+                time.sleep(0.25)
+        if not connection_manager.browser_connected():
+            age = connection_manager.seconds_since_poll()
+            since = ('since this server started' if age is None
+                     else f'for {age:.0f} s')
+            return {'success': False, 'action': action,
+                    'error': f'No browser connected: the Firefox add-on has not contacted the server {since}. '
+                             'Make sure Firefox is running and ClaudeCodeBrowser is enabled in about:addons.'}
+
         request_id = str(time.time())
         command_data = {
             'action': action,
@@ -1240,7 +1296,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             logger.warning(f"Command {action} timed out after {wait_timeout:.0f}s")
             return {
                 'success': False,
-                'error': f'Command {action} timed out waiting for browser response after {wait_timeout:.0f}s',
+                'error': f'Firefox is connected but did not answer {action} within {wait_timeout:.0f} s. '
+                         'The page may be busy or the action may still be running: check the tab before retrying.',
                 'action': action
             }
 

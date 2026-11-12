@@ -304,11 +304,13 @@ async function handleCommand(message) {
     result = { success: false, error: error.message };
   }
 
-  // Send result back to native host
+  // Send result back to native host. The version lets the server explain
+  // "Unknown action" errors from an add-on older than the server.
   if (nativePort && message.requestId) {
     nativePort.postMessage({
       requestId: message.requestId,
-      ...result
+      ...result,
+      extensionVersion: browser.runtime.getManifest().version
     });
   }
 
