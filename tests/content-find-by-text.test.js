@@ -47,3 +47,24 @@ test('missing text still reports not found', async () => {
   const { result } = await clickText('<button>Other</button>', 'Absent');
   assert.match(result.error, /Element not found/);
 });
+
+test('nested script data cannot make its parent a text match', async () => {
+  const { result, clicked } = await clickText(
+    '<button id="cancel">Cancel<script type="application/json">{"label":"Login"}</script></button>',
+    'Login');
+  assert.match(result.error, /Element not found/);
+  assert.deepEqual(clicked, []);
+});
+
+test('a hidden duplicate does not displace its visible parent', async () => {
+  const { clicked } = await clickText(
+    '<button id="save">Save<span id="hidden" hidden>Save</span></button>', 'Save');
+  assert.deepEqual(clicked, ['save']);
+});
+
+test('hidden descendants cannot make their parent a text match', async () => {
+  const { result, clicked } = await clickText(
+    '<button id="cancel">Cancel<span style="display: none">Login</span></button>', 'Login');
+  assert.match(result.error, /Element not found/);
+  assert.deepEqual(clicked, []);
+});

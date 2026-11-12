@@ -608,23 +608,44 @@
   const NON_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
   const normalizeText = (text) => (text || '').replace(/\s+/g, ' ').trim();
 
-  // The deepest element whose whole text (across child elements, whitespace
-  // collapsed) contains `text`. Exact matches beat partial ones, visible beats hidden.
+  // Match complete labels, excluding non-text and hidden descendants before
+  // choosing the deepest candidate. Exact matches beat partial matches.
   function findByText(text) {
     const target = normalizeText(text);
-    if (!target || !document.body || !normalizeText(document.body.textContent).includes(target)) {
-      return null;
+    if (!target || !document.body) return null;
+    let best = null;
+    let bestRank = Infinity;
+
+    function scan(element) {
+      if (NON_TEXT_TAGS.has(element.tagName)) return { text: '', matched: false };
+      const style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.opacity === '0') return { text: '', matched: false };
+      const visible = style.visibility !== 'hidden' && style.visibility !== 'collapse';
+      let label = '';
+      let childMatched = false;
+      for (const node of element.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE && visible) {
+          label += node.nodeValue;
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const child = scan(node);
+          label += child.text;
+          childMatched = childMatched || child.matched;
+        }
+      }
+      const normalized = normalizeText(label);
+      const matched = visible && normalized.includes(target);
+      if (element !== document.body && matched && !childMatched) {
+        const rank = normalized === target ? 0 : 1;
+        if (rank < bestRank) {
+          best = element;
+          bestRank = rank;
+        }
+      }
+      return { text: label, matched: matched || childMatched };
     }
-    const matches = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
-      acceptNode: (el) => (NON_TEXT_TAGS.has(el.tagName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
-    });
-    for (let el = walker.nextNode(); el; el = walker.nextNode()) {
-      if (normalizeText(el.textContent).includes(target)) matches.push(el);
-    }
-    const deepest = matches.filter(el => !matches.some(other => other !== el && el.contains(other)));
-    const rank = (el) => (normalizeText(el.textContent) === target ? 0 : 2) + (isVisible(el) ? 0 : 1);
-    return deepest.sort((a, b) => rank(a) - rank(b))[0] || null;
+
+    scan(document.body);
+    return best;
   }
 
   function findElement(options) {
