@@ -720,6 +720,8 @@
   }
 
   // Type functionality
+  const MAX_TYPING_MS = 10000;
+
   async function performType(options) {
     let element = findElement(options);
 
@@ -734,8 +736,14 @@
 
     assertNotPasswordField(element, options);
 
-    // Focus the element
+    // Focus the element. In a background window focus() moves the focus but the
+    // browser fires no focus events, and React/MUI inputs that track focus then
+    // throw away what is typed, so send them ourselves (issue #8).
     element.focus();
+    if (!document.hasFocus()) {
+      element.dispatchEvent(new FocusEvent('focus'));
+      element.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    }
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await sleep(100);
 
@@ -761,7 +769,13 @@
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      // Simulate typing character by character
+      // Simulate typing character by character. Long texts go faster so typing
+      // ends well inside the tool's timeout instead of running on after the
+      // tool has already reported a failure (issue #8).
+      // In a background tab Firefox clamps timers to >= 1 s, which made every
+      // pause a full second; nobody watches a hidden tab, so don't pause there.
+      const delay = document.hidden ? 0
+        : Math.min(options.delay ?? 50, MAX_TYPING_MS / Math.max(text.length, 1));
       for (const char of text) {
         const keyDown = new KeyboardEvent('keydown', {
           key: char,
@@ -792,7 +806,7 @@
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(keyUp);
 
-        await sleep(options.delay || 50);
+        if (delay > 0) await sleep(delay);
       }
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }

@@ -30,3 +30,6 @@ Thumbs.db
 
 # Screenshots (user data)
 screenshots/
+
+# Test harness dependencies
+node_modules/
