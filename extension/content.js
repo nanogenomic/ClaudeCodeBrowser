@@ -769,13 +769,11 @@
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      // Simulate typing character by character. Long texts go faster so typing
-      // ends well inside the tool's timeout instead of running on after the
-      // tool has already reported a failure (issue #8).
-      // In a background tab Firefox clamps timers to >= 1 s, which made every
-      // pause a full second; nobody watches a hidden tab, so don't pause there.
-      const delay = document.hidden ? 0
-        : Math.min(options.delay ?? 50, MAX_TYPING_MS / Math.max(text.length, 1));
+      // Cap waiting by elapsed time: browsers can clamp each timer above its
+      // requested delay. Finish remaining characters without pauses after the
+      // budget expires, or whenever the tab is hidden (issue #8).
+      const deadline = performance.now() + MAX_TYPING_MS;
+      const delay = Math.min(options.delay ?? 50, MAX_TYPING_MS / Math.max(text.length, 1));
       for (const char of text) {
         const keyDown = new KeyboardEvent('keydown', {
           key: char,
@@ -806,7 +804,10 @@
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(keyUp);
 
-        if (delay > 0) await sleep(delay);
+        const remaining = deadline - performance.now();
+        if (!document.hidden && delay > 0 && remaining > 0) {
+          await sleep(Math.min(delay, remaining));
+        }
       }
       element.dispatchEvent(new Event('change', { bubbles: true }));
     }

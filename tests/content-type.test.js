@@ -68,3 +68,42 @@ test('in a background tab typing does not pause between characters', async () =>
   assert.equal(window.document.getElementById('q').value, 'x'.repeat(200));
   assert.ok(pauses.length < 5, `${pauses.length} timer waits for 200 characters`);
 });
+
+// Advance a monotonic clock by the actual timer delay, including browser clamps.
+function installTimerClock(window, minimumDelay) {
+  let elapsed = 0;
+  window.performance.now = () => elapsed;
+  window.setTimeout = (fn, ms = 0) => {
+    elapsed += Math.max(ms, minimumDelay());
+    fn();
+    return 0;
+  };
+  return () => elapsed;
+}
+
+test('minimum browser timer delays do not consume more than the typing wait budget', async () => {
+  const { window, send } = loadContentScript('<textarea id="desc"></textarea>');
+  const elapsed = installTimerClock(window, () => 4);
+  const text = 'x'.repeat(10000);
+
+  const result = await send({ action: 'type', selector: '#desc', text });
+
+  assert.equal(result.error, undefined);
+  assert.equal(window.document.getElementById('desc').value, text);
+  assert.ok(elapsed() <= 11000, `clamped timers consumed ${elapsed()} ms`);
+});
+
+test('typing stops waiting when the tab becomes hidden mid-command', async () => {
+  const { window, send } = loadContentScript('<input id="q">');
+  let hidden = false;
+  Object.defineProperty(window.document, 'hidden', { get: () => hidden });
+  const elapsed = installTimerClock(window, () => hidden ? 1000 : 4);
+  const input = window.document.getElementById('q');
+  input.addEventListener('input', () => { hidden = true; });
+
+  const result = await send({ action: 'type', selector: '#q', text: 'x'.repeat(100) });
+
+  assert.equal(result.error, undefined);
+  assert.equal(input.value, 'x'.repeat(100));
+  assert.ok(elapsed() < 1100, `waited ${elapsed()} ms after the tab became hidden`);
+});
