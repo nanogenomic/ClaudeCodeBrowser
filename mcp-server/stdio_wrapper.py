@@ -22,6 +22,11 @@ HTTP_HOST = os.environ.get('CLAUDE_BROWSER_HOST', '127.0.0.1')
 HTTP_PORT = int(os.environ.get('CLAUDE_BROWSER_HTTP_PORT', '8765'))
 HTTP_URL = f'http://{HTTP_HOST}:{HTTP_PORT}'
 
+# Must outlast the server's longest wait for the browser (solve_captcha: 200 s),
+# or this HTTP call times out first and the agent gets a bare 'timed out'
+# instead of the server's explanation.
+TOOL_CALL_TIMEOUT = 240
+
 # Server process reference
 server_process = None
 
@@ -108,7 +113,7 @@ def call_tool(name, arguments):
             data=data,
             headers=_api_headers()
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=TOOL_CALL_TIMEOUT) as resp:
             return json.loads(resp.read().decode('utf-8'))
     except Exception as e:
         log(f"Error calling tool {name}: {e}")
