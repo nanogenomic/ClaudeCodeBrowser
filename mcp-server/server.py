@@ -303,7 +303,9 @@ MCP_TOOLS: List[MCPTool] = [
             "type": "object",
             "required": ["tab_id"],
             "properties": {
-                "tab_id": {"type": "integer", "description": "ID of the tab to get info for."}
+                "tab_id": {"type": "integer", "description": "ID of the tab to get info for."},
+                "include_favicon": {"type": "boolean", "default": False,
+                                    "description": "Include favIconUrl (often a large base64 data URI)."}
             }
         }
     ),

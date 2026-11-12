@@ -228,7 +228,7 @@ async function handleCommand(message) {
         result = await focusTab(tabId);
         break;
       case "getTabInfo":
-        result = await getTabInfo(tabId);
+        result = await getTabInfo(tabId, data);
         break;
       case "findTabs":
         result = await findTabs(data);
@@ -662,9 +662,10 @@ async function getAllTabs(options = {}) {
     // window/tab in the user's browser. With dozens of tabs open, querying
     // {} and returning full metadata per tab blows past response size
     // limits. Opt into the wider view explicitly when needed.
-    const currentWindowOnly = options.current_window_only !== false;
-    const includeFavicon = options.include_favicon === true;
-    const urlPattern = options.url_pattern ? new RegExp(options.url_pattern) : null;
+    // The server sends tool arguments in camelCase (camelize_args).
+    const currentWindowOnly = options.currentWindowOnly !== false;
+    const includeFavicon = options.includeFavicon === true;
+    const urlPattern = options.urlPattern ? new RegExp(options.urlPattern) : null;
     const limit = Number.isInteger(options.limit) ? options.limit : 50;
 
     const queryOpts = currentWindowOnly ? { currentWindow: true } : {};
@@ -720,7 +721,7 @@ async function getAllTabs(options = {}) {
 }
 
 // Get detailed info about a specific tab
-async function getTabInfo(tabId) {
+async function getTabInfo(tabId, options = {}) {
   try {
     const tab = await browser.tabs.get(tabId);
     const win = await browser.windows.get(tab.windowId);
@@ -747,7 +748,8 @@ async function getTabInfo(tabId) {
         status: tab.status,
         discarded: tab.discarded,
         audible: tab.audible,
-        favIconUrl: tab.favIconUrl
+        // Often a multi-KB data: URI, so only on request (like get_tabs).
+        ...(options.includeFavicon === true ? { favIconUrl: tab.favIconUrl } : {})
       },
       window: {
         id: win.id,
