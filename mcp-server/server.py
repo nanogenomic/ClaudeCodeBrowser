@@ -28,6 +28,7 @@ import secrets
 import stat
 import sys
 import base64
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1118,7 +1119,53 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             arguments['allow_password'] = bool(
                 get_safety_guard().config.get('allow_password_typing', False))
 
+        if tool_name == 'browser_get_tabs':
+            return self._slim_tabs_result(
+                self._dispatch_action(action, tab_id, dict(arguments)), arguments)
+
         return self._dispatch_action(action, tab_id, arguments)
+
+    # Fields kept per tab in browser_get_tabs results. Older extension builds
+    # return raw tabs.Tab objects (favIconUrl as base64 data URIs, mutedInfo,
+    # highlighted, ...), which can blow responses up to 100k+ characters.
+    _TAB_FIELDS = ('id', 'url', 'title', 'active', 'windowId', 'pinned',
+                   'status', 'audible')
+
+    def _slim_tabs_result(self, result: Dict[str, Any],
+                          arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Enforce limit / url_pattern / include_favicon server-side so the
+        response stays small regardless of the extension version."""
+        if not isinstance(result, dict) or not isinstance(result.get('tabs'), list):
+            return result
+        tabs = result['tabs']
+        pattern = arguments.get('url_pattern')
+        if pattern:
+            try:
+                rx = re.compile(pattern)
+                tabs = [t for t in tabs if rx.search(t.get('url') or '')]
+            except re.error as e:
+                return {'success': False, 'error': f'Invalid url_pattern: {e}'}
+        limit = arguments.get('limit', 50)
+        if not isinstance(limit, int) or limit <= 0:
+            limit = 50
+        total = len(tabs)
+        include_favicon = arguments.get('include_favicon') is True
+        slim = []
+        for t in tabs[:limit]:
+            if not isinstance(t, dict):
+                continue
+            item = {k: t[k] for k in self._TAB_FIELDS if k in t}
+            if t.get('discarded'):
+                item['discarded'] = True
+            if include_favicon and 'favIconUrl' in t:
+                item['favIconUrl'] = t['favIconUrl']
+            slim.append(item)
+        out = {k: v for k, v in result.items() if k != 'tabs'}
+        out['tabs'] = slim
+        out['total_matched'] = total
+        if total > limit:
+            out['truncated'] = True
+        return out
 
     def _dispatch_action(self, action: str, tab_id: Optional[int],
                          arguments: Dict[str, Any]) -> Dict[str, Any]:
