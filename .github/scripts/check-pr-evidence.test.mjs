@@ -73,6 +73,24 @@ test("accepts common hosted recordings for frontend test evidence", () => {
   assert.ok(!result.errors.some((error) => error.includes("Frontend test video")));
 });
 
+test("validates line permalinks against a fork PR head repository", () => {
+  const headRepository = "pahntanapat/token-saver-skill";
+  const result = validateEvidence({
+    body: [
+      "- Test output / evidence: https://example.com/output",
+      `- Test script permalink: https://github.com/${headRepository}/blob/${headSha}/src/example.test.mjs#L1`,
+      `- Implementation code permalink: https://github.com/${headRepository}/blob/${headSha}/src/example.mjs#L1`,
+      `- Feature map permalink: https://github.com/${headRepository}/blob/${headSha}/docs/feature-map.md#L1`,
+    ].join("\n"),
+    changedFiles: ["docs/feature-map.md"],
+    repository,
+    headRepository,
+    headSha,
+    serverUrl,
+  });
+  assert.deepEqual(result.errors, []);
+});
+
 test("requires a changed feature map and a video for frontend changes", () => {
   const result = validateEvidence({
     body: "",

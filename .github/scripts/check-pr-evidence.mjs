@@ -82,7 +82,14 @@ export function isFrontendPath(filePath) {
   return FRONTEND_EXTENSION.test(filePath) || FRONTEND_SEGMENT.test(filePath);
 }
 
-export function validateEvidence({ body, changedFiles, repository, headSha, serverUrl }) {
+export function validateEvidence({
+  body,
+  changedFiles,
+  repository,
+  headRepository = repository,
+  headSha,
+  serverUrl,
+}) {
   const errors = [];
   const fields = Object.fromEntries(
     Object.entries(FIELD_NAMES).map(([key, label]) => [key, extractField(body, label)]),
@@ -99,7 +106,11 @@ export function validateEvidence({ body, changedFiles, repository, headSha, serv
   const parsed = {};
   for (const key of ["testScript", "implementation", "featureMap"]) {
     if (!urls[key]) continue;
-    parsed[key] = parseLinePermalink(fields[key], { repository, headSha, serverUrl });
+    parsed[key] = parseLinePermalink(fields[key], {
+      repository: headRepository,
+      headSha,
+      serverUrl,
+    });
     if (parsed[key].error) errors.push(`${FIELD_NAMES[key]}: ${parsed[key].error}`);
   }
 
@@ -141,6 +152,7 @@ function main() {
   if (!pullRequest) throw new Error("This check must run for a pull_request event.");
 
   const repository = process.env.GITHUB_REPOSITORY;
+  const headRepository = pullRequest.head.repo?.full_name || repository;
   const serverUrl = process.env.GITHUB_SERVER_URL || "https://github.com";
   const headSha = pullRequest.head.sha;
   const changedFiles = execFileSync(
@@ -155,6 +167,7 @@ function main() {
     body: pullRequest.body || "",
     changedFiles,
     repository,
+    headRepository,
     headSha,
     serverUrl,
   });
