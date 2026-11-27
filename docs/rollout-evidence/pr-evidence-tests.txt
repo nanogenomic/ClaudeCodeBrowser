@@ -1,10 +1,10 @@
-✔ extracts a labeled field and HTTPS link from a PR body (0.7779ms)
-✔ accepts line permalinks pinned to the current repository and PR head (0.8263ms)
-✔ rejects branch links and stale commit permalinks (0.2217ms)
-✔ detects frontend files and frontend source directories (0.3048ms)
-✔ accepts common hosted recordings for frontend test evidence (0.8747ms)
-✔ validates line permalinks against a fork PR head repository (0.2777ms)
-✔ requires a changed feature map and a video for frontend changes (0.1154ms)
+✔ extracts a labeled field and HTTPS link from a PR body (0.9486ms)
+✔ accepts line permalinks pinned to the current repository and PR head (0.7709ms)
+✔ rejects branch links and stale commit permalinks (0.215ms)
+✔ detects frontend files and frontend source directories (0.2939ms)
+✔ accepts common hosted recordings for frontend test evidence (0.8608ms)
+✔ validates line permalinks against a fork PR head repository (0.2878ms)
+✔ requires a changed feature map and a video for frontend changes (0.1377ms)
 ℹ tests 7
 ℹ suites 0
 ℹ pass 7
@@ -12,4 +12,4 @@
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 71.334
+ℹ duration_ms 87.0371
