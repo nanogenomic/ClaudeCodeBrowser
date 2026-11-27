@@ -1,0 +1,21 @@
+name: PR evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-evidence:
+    name: PR evidence and feature map
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test evidence validator
+        run: node --test .github/scripts/check-pr-evidence.test.mjs
+      - name: Check PR evidence and feature map
+        run: node .github/scripts/check-pr-evidence.mjs
